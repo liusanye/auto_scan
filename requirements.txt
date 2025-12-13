@@ -1,0 +1,11 @@
+# 核心依赖（Apple Silicon 建议先单独安装 onnxruntime-silicon）
+rembg>=2.0.52,<2.1
+opencv-python-headless>=4.9.0,<4.10
+onnxruntime-silicon>=1.16.0,<1.19
+scikit-image>=0.22.0,<0.23
+tqdm>=4.66.0,<4.67
+pyyaml>=6.0.1,<7.0
+Pillow>=10.2.0,<12.0
+numpy>=1.26.0,<2.0
+# 可选：若安装成功可用作去卷曲，失败可删除本行
+# page-dewarp>=0.0.9,<0.1
