@@ -2,7 +2,18 @@
 
 > 这是项目的“记忆系统”。任何人接手前必须先读本文件。仅保留铁律和工作要求，其余历史记录已重置，请按要求持续维护。
 
+## 接手速览（需随进度实时更新）
+- 环境：项目根已存在 `.venv`，进入项目后执行 `source .venv/bin/activate`，再 `export PYTHONPATH=.`。如依赖缺失，可用 `.venv/bin/pip install -r requirements.txt`。
+- 运行常用命令：`PYTHONPATH=. .venv/bin/python cli.py --input <文件或目录> --output outputs --mode quality --debug`；烟囱测试（无 OCR）`PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke_perf --mode fast --max-files 2`。
+- 当前能力：只输出扫描风格图，OCR 未启用；质量模式推荐，fast 仅在拍得很正时用；dewarp 透视回退，粉框精修开启。
+- 输出与调试：结果在 `outputs/`（含 `run_summary.json`）；debug 打开会生成 `01/02` 调试图和 `10-21` 中间件。
+- 版本与分支：基线提交 `f3ea31a`，仓库干净；需提交请直接用 git。
+- 更多细节：若本速览不够，请继续阅读下文，并查阅根目录 `README.md` 的环境/运行说明。
+
 ## 维护铁律（必须遵守）
+- “接手速览”必须保持实时更新：任何影响环境/运行/能力/输出的变更，先更新该版块再行动，确保接手者一屏即读。
+- 版本管理：当前仓库 git 可用，达到阶段性进展或有效调试结果后务必提交版本，保持可回退与可追踪。
+- 分支策略：调试新功能/高风险改动一律新建分支（例如 `feature/<name>` 或 `exp/<name>`），验证通过再合并回主干，避免直接在主分支试验。
 - 任何反馈、进展、风险、异常或中断恢复，**先更新本文件，再行动**，确保他人仅凭本文件即可对齐上下文。
 - 记录真实、及时、可复现，禁止含糊或遗漏关键信息。
 - 重要决策、调参、风险变化都要写明时间、影响、下一步。
@@ -19,6 +30,7 @@
 - 已知风险：dewarp 能力有限；参数需对照调试样本（006/007/008/009、23-27）验证标题/装订覆盖；配置与实际行为需继续核实。
 - 环境与运行：项目根已有 `.venv`，核心依赖（rembg/opencv/Pillow/numpy/scikit-image 等）已安装；运行脚本需设置 `PYTHONPATH=.`（例如 `PYTHONPATH=. .venv/bin/python scripts/smoke_test.py ...`），否则会找不到 `docscan` 模块。
 - 模式约定：当前场景（同设备/同时间/同方式拍摄的稳定批次）建议统一使用 `quality` 模式处理，获得一致的透视矫正与增强；如需极致速度且拍得很正，可改用 `fast`，一般无需 `auto`。
+- 版本控制：仓库当前处于提交 `f3ea31a`（初步调试稳定基线），工作区干净；后续仅使用 git 管理版本，暂不再制作额外压缩包备份。若需开发 OCR，请从此提交新开分支推进。
 - 输出文件说明（单页示例，若 `--debug` 则会生成带 `_raw/dewarp/refine/gray/bw` 的中间件）：
   - 命名规则按处理顺序加前缀，并带源图+页标识：`<prefix>_<image_stem>_page_XXX_*`。
   - `01_debug_mask.png`：分割/兜底的整体 mask 可视化（图级）。
@@ -47,3 +59,4 @@
 - 2025-12-13：梳理并修复裁剪/几何逻辑：默认开启双页判定，修正 max_expand_ratio 过度夹值；补充 EXIF 方向矫正、轻量 deskew 与 A4 比例微调，dewarp 可选调用 page-dewarp 不可用则透视回退；pipeline 增加 auto 自适应、阶段耗时记录。compileall 因系统缓存目录权限失败未验证，建议运行 smoke 确认裁剪/增强输出正常。
 - 2025-12-13：修复配置重复键（geom deskew/a4）、激活 right_min_expand_ratio 右侧扩边、内容兜底 bbox 增加安全留白；修正 auto 模式判定使用原始尺寸；io_utils 加入上下文读图；新增无 OCR 的烟囱测试脚本 `scripts/smoke_test.py` 和 `examples/README.md`；README 更新“当前仅输出扫描图，不含 OCR”，并移除 OCR 依赖。***
 - 2025-12-13：输出文件命名加前缀排序并包含源图名+页号（01/02 debug，10-14 中间件，20/21 正式输出），减少歧义；DEVLOG 增补文件说明。质量模式批量跑因超时中断，fast+debug 试跑亦因 120s 限时中断，已确认单张 fast 约 2–3s，批量需分批或去掉 debug；当前 dewarp 默认关闭（fast）或透视回退（quality，无 page-dewarp）。完成 tar 备份 `checkpoint_20251213.tar.gz`（排除 .git/.venv/outputs*），但本地 `.git` 目录不可写（git add/index.lock 报 Operation not permitted），暂无法提交 git 版本。
+- 2025-12-14：确认 `.git` 可用且已在提交 `f3ea31a`，仓库干净；约定后续仅用 git 进行版本控制，停止新增压缩包备份；OCR 功能暂不开发，如需请从 `f3ea31a` 新建分支推进。
