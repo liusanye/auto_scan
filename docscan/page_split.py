@@ -389,14 +389,22 @@ def split_single_and_double_pages(
             # 兜底条件B：高度不足且整体下移（但仅在面积不高时触发，避免正常页被整图化）
             if not fallback and height_ratio < single_min_height_ratio and y0 > force_top_padding_ratio * H and area_ratio < 0.5:
                 fallback = True
+            # 默认保留分割框，避免整图；仅在 fallback 时用 mask 外接框且不再扩边，防止膨胀
             if fallback:
-                # 兜底：直接使用整图（保留少量顶边），避免截顶
-                pad_top = int(force_top_padding_ratio * H)
-                x0, y0, x1, y1 = 0, pad_top, W, H
-                bbox = (x0, y0, x1, y1)
+                # fallback：直接用全局 mask 外接框，不扩边
+                coords = cv2.findNonZero(mask_region)
+                if coords is not None:
+                    mx, my, mw, mh = cv2.boundingRect(coords)
+                    bbox = (mx, my, mx + mw, my + mh)
+                else:
+                    bbox = (x0, y0, x1, y1)
+                expand_ratio = 0.0
+                expand_extra = (0.0, 0.0, 0.0)
+                max_expand_ratio = 0.0
+                right_min_expand_ratio_eff = 0.0
             else:
-                # 正常情况下保留分割框
                 bbox = (x0, y0, x1, y1)
+                right_min_expand_ratio_eff = right_min_expand_ratio
             # 内容兜底：若分割框仍偏小，融合内容外接矩形
             content_box = _content_bbox(region, thresh=content_thresh)
             if content_box is not None:
@@ -415,8 +423,8 @@ def split_single_and_double_pages(
                     bbox = (max(0, x0), max(0, y0), min(W, x1), min(H, y1))
             # 右侧最小扩边，防止竖排标题漏出
             x0, y0, x1, y1 = bbox
-            if right_min_expand_ratio > 0 and x1 < W:
-                extra_right = int((x1 - x0) * right_min_expand_ratio)
+            if right_min_expand_ratio_eff > 0 and x1 < W:
+                extra_right = int((x1 - x0) * right_min_expand_ratio_eff)
                 if extra_right > 0:
                     x1 = min(W, x1 + extra_right)
                     bbox = (x0, y0, x1, y1)
@@ -440,6 +448,14 @@ def split_single_and_double_pages(
             top_extra = max(0.0, float(top_extra))
             bottom_extra = max(0.0, float(bottom_extra))
             lr_extra = max(0.0, float(lr_extra))
+            # 如果当前 bbox 已覆盖大部分区域，直接取消扩边，避免膨胀
+            if cover_ratio >= 0.80:
+                base_ratio_eff = 0.0
+                top_extra = 0.0
+                bottom_extra = 0.0
+                lr_extra = 0.0
+                if max_expand_ratio is not None:
+                    max_expand_ratio = 0.0
             bbox_exp = bbox if base_ratio_eff == 0.0 and top_extra == 0.0 and bottom_extra == 0.0 and lr_extra == 0.0 else _expand_bbox_directional(
                 bbox,
                 (H, W),

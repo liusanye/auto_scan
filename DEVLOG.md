@@ -60,3 +60,4 @@
 - 2025-12-13：修复配置重复键（geom deskew/a4）、激活 right_min_expand_ratio 右侧扩边、内容兜底 bbox 增加安全留白；修正 auto 模式判定使用原始尺寸；io_utils 加入上下文读图；新增无 OCR 的烟囱测试脚本 `scripts/smoke_test.py` 和 `examples/README.md`；README 更新“当前仅输出扫描图，不含 OCR”，并移除 OCR 依赖。***
 - 2025-12-13：输出文件命名加前缀排序并包含源图名+页号（01/02 debug，10-14 中间件，20/21 正式输出），减少歧义；DEVLOG 增补文件说明。质量模式批量跑因超时中断，fast+debug 试跑亦因 120s 限时中断，已确认单张 fast 约 2–3s，批量需分批或去掉 debug；当前 dewarp 默认关闭（fast）或透视回退（quality，无 page-dewarp）。完成 tar 备份 `checkpoint_20251213.tar.gz`（排除 .git/.venv/outputs*），但本地 `.git` 目录不可写（git add/index.lock 报 Operation not permitted），暂无法提交 git 版本。
 - 2025-12-14：确认 `.git` 可用且已在提交 `f3ea31a`，仓库干净；约定后续仅用 git 进行版本控制，停止新增压缩包备份；OCR 功能暂不开发，如需请从 `f3ea31a` 新建分支推进。
+- 2025-12-14：全量跑 source_images（共 95 张），命令 `PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode fast --debug --concurrency 1`，耗时约 4.5 分钟，OCR 关闭。3 张分割无结果回退内容兜底（image_001/003/088），多张几何精修因覆盖率低回退矩形；可用 `outputs/<image>/02_debug_bbox.png` 对照粉框/绿框检查标题/装订覆盖。

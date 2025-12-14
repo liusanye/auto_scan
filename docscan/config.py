@@ -51,17 +51,17 @@ DEFAULTS: Dict[str, Any] = {
         "deskew_max_angle": 5.0,
         "border_px": 12,
         "enable_refine": True,  # 开启粉框透视（绿框裁剪基础上做拟合）
-        "crop_expand_ratio": 0.05,  # 基础扩展比例
+        "crop_expand_ratio": 0.07,  # 基础扩展比例（加大留白）
         "crop_expand_extra": {
             "top": 0.15,     # 额外向上扩展比例（适中保护标题）
             "bottom": 0.05,  # 额外向下扩展比例
             "lr": 0.10,      # 额外左右扩展比例（保护竖排标题）
         },
-        "max_expand_ratio": 0.08,  # 扩边上限（相对长边），防止撑满整幅
+        "max_expand_ratio": 0.10,  # 扩边上限（相对长边），防止撑满整幅
         "shape_filter": {
-            "min_fill": 0.15,  # mask 填充率下限
+            "min_fill": 0.10,  # mask 填充率下限（放宽，避免过度收紧）
             "min_ratio": 0.50,  # 长宽比下限（适度放宽兼容窄幅长表）
-            "max_ratio": 1.8,  # 长宽比上限
+            "max_ratio": 2.0,  # 长宽比上限（放宽，兼容轻微扭曲）
             "center_tolerance": 0.35,  # 框中心偏移容忍（相对短边）
         },
     },
