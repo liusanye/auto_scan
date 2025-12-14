@@ -149,14 +149,37 @@ def refine_geometry_with_opencv(
     rect_area = w_rect * h_rect
     quad_area = cv2.contourArea(quad.astype("float32"))
     coverage = quad_area / max(1.0, rect_area)
-    if coverage < min_coverage:
-        log.warning("geom_refine: quad 覆盖率低于阈值，回退用矩形透视 coverage=%.3f", coverage)
+    mask_fill = float(cv2.countNonZero(mask)) / float(max(1, mask_h * mask_w))
+    min_coverage_eff = min_coverage
+    if mask_fill < 0.4:
+        min_coverage_eff = min(min_coverage_eff, 0.75)
+    if mask_fill < 0.25:
+        min_coverage_eff = min(min_coverage_eff, 0.6)
+    if coverage < min_coverage_eff:
+        log.warning("geom_refine: quad 覆盖率低于阈值，回退用矩形透视 coverage=%.3f (min=%.2f, mask_fill=%.3f)", coverage, min_coverage_eff, mask_fill)
         quad = _quad_from_rect(rect_box)
         # 若矩形本身也过小，直接返回原图，避免粉框比绿框还小
         rect_fill = rect_area / float(mask_w * mask_h)
-        if rect_fill < 0.2:
-            log.warning("geom_refine: rect 覆盖率过低(%.3f)，跳过透视", rect_fill)
-            return page_image, {"method": "refine_skip", "reason": "low_coverage", "quad": quad.tolist(), "coverage": coverage, "rect_fill": rect_fill, "deskew": deskew_angle}
+        rect_fill_thresh = 0.1 if mask_fill < 0.25 else 0.2
+        if rect_fill < rect_fill_thresh:
+            log.warning("geom_refine: rect 覆盖率过低(%.3f < %.3f)，跳过透视", rect_fill, rect_fill_thresh)
+            return page_image, {
+                "method": "refine_skip",
+                "reason": "low_coverage",
+                "quad": quad.tolist(),
+                "coverage": coverage,
+                "rect_fill": rect_fill,
+                "mask_fill": mask_fill,
+                "deskew": deskew_angle,
+            }
 
     refined = _warp_quad(page_image, quad, border_px=border_px, target_ratio=a4_ratio, ratio_tolerance=a4_tolerance)
-    return refined, {"method": "refine_warp", "reason": "ok", "quad": quad.tolist(), "coverage": coverage, "deskew": deskew_angle}
+    return refined, {
+        "method": "refine_warp",
+        "reason": "ok",
+        "quad": quad.tolist(),
+        "coverage": coverage,
+        "deskew": deskew_angle,
+        "mask_fill": mask_fill,
+        "min_coverage": min_coverage_eff,
+    }

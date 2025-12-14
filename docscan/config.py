@@ -44,6 +44,8 @@ DEFAULTS: Dict[str, Any] = {
     "dewarp": {
         "enable_polyline": True,
         "enabled": True,
+        "enable_curve_adjust": True,  # 轻量曲率微调
+        "curve_max_shift_px": 6,
     },
     "geom": {
         "a4_ratio": 1.414,
@@ -77,7 +79,9 @@ DEFAULTS: Dict[str, Any] = {
     },
     "run": {
         "debug": False,
+        "debug_level": "none",  # none | bbox | full
         "max_pages": None,
+        "segment_preview_side": 2000,  # 分割用的预览分辨率上限（长边），减小耗时
     },
 }
 

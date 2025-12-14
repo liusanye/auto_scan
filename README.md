@@ -18,7 +18,7 @@
   pip install onnxruntime-silicon
   pip install rembg opencv-python-headless scikit-image tqdm pyyaml Pillow 'numpy<2.0' 'onnxruntime-silicon>=1.16,<1.19'
   # page-dewarp 如安装失败可暂时跳过，流程有回退
-  pip install page-dewarp || true
+  # 已不再依赖 page-dewarp，采用透视回退+轻量曲率微调
   ```
 - 如后续需要启用 OCR，再额外安装 `paddlepaddle` 与 `paddleocr`；当前阶段无需。
 - 环境变量建议：`OMP_NUM_THREADS=1`，避免 onnxruntime 占满核。
@@ -43,17 +43,23 @@ docscan/
 - 回退链：dewarp→透视→原图；segment 失败→全图裁剪+留白。
 - 调试与观测：debug 输出 mask/投影曲线/四边形/deskew 角度/矫正前后对比；run-summary 记录耗时、置信度、降级、输出路径。
 - 预热：CLI 提供 `--warmup` 对分割空跑，避免首帧极慢。
-- 实现现状与裁剪逻辑：绿框来自分割 mask 的外接框，扩边比例由配置 `geom.crop_expand_ratio/crop_expand_extra` 决定；粉框由几何精修拟合四边形，最终生成的 scan_gray/scan_bw 以粉框（或矩形回退）透视结果为准，绿框仅作为初裁范围。当前 dewarp 为透视回退方案，page-dewarp/曲率拟合尚未集成。
+- 实现现状与裁剪逻辑：绿框来自分割 mask 的外接框，扩边比例由配置 `geom.crop_expand_ratio/crop_expand_extra` 决定；粉框由几何精修拟合四边形，最终生成的 scan_gray/scan_bw 以粉框（或矩形回退）透视结果为准，绿框仅作为初裁范围。当前 dewarp 采用透视回退 + 轻量曲率微调，无 page-dewarp 依赖。
 
 ## 运行示例（待代码落地后）
 
 ```bash
 python cli.py --input input_dir_or_file --output output_dir --mode quality --config config.yaml --debug
+# 只看裁剪/框（轻量调试）： --debug-level bbox
+# 关闭调试输出：默认 none
+# 仅分割/裁剪预览（不做去透视和增强）： --dry-run
 ```
 
 批量：
 ```bash
-python scripts/run_batch.py --input input_dir --output output_dir --mode auto --concurrency 2
+python scripts/run_batch.py --input input_dir --output output_dir --mode auto --concurrency 2 --debug-level bbox
+# CPU 密集型，建议并发=核数/2；需要完整中间图用 --debug-level full
+# 仅分割/裁剪预览： --dry-run
+# 如进程池受限，可指定线程池： --pool thread （默认已是 thread；process 若遇权限错误会自动回退）
 ```
 
 调试：
@@ -79,3 +85,5 @@ python scripts/smoke_test.py --input source_images --output outputs_smoke --mode
 - 已完成方案整合与落地策略：见 `planCodex版.md`。
 - 当前阶段仅输出扫描风格图，OCR 功能暂不启用，后续作为扩展再开启。
 - 下一步：按方案搭建代码框架、配置文件、CLI/run_batch、smoke test，并锁定已验证依赖版本。
+- 调试与性能建议：`--debug-level` 可选 `none/bbox/full`（默认 none，bbox 仅输出 01/02 轻量调试）；分割阶段默认在 2000px 预览分辨率下运行以减少耗时；批量并发建议核数/2，CPU 密集任务使用进程池。
+- 调参快捷：`--dry-run` 可仅运行分割/裁剪并输出调试框，便于快速核查框选，无需去透视和增强。

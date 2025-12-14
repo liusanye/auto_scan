@@ -8,6 +8,7 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 
+from docscan import mask_utils
 from docscan.segment import PageRegion
 
 log = logging.getLogger(__name__)
@@ -162,7 +163,6 @@ def _content_bbox(image: np.ndarray, thresh: int | None = None) -> tuple[int, in
     """基于内容的兜底 bbox：自适应阈值反转后取最大连通域外接矩形。"""
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     if thresh is None:
-        # 自适应：若 Otsu 失败则退回高阈值
         t, bin_inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         if t == 0:
             _, bin_inv = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
@@ -179,40 +179,6 @@ def _content_bbox(image: np.ndarray, thresh: int | None = None) -> tuple[int, in
     x1 = min(W, x + w + pad)
     y1 = min(H, y + h + pad)
     return (x0, y0, x1, y1)
-
-
-def _content_mask_with_coverage(image: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int, int, int] | None]:
-    """生成内容驱动的 mask，并返回覆盖率与 bbox，供分割失败兜底使用。"""
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    bin_inv = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 35, 10)
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    mask = cv2.morphologyEx(bin_inv, cv2.MORPH_CLOSE, k, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
-    coords = cv2.findNonZero(mask)
-    if coords is None:
-        return np.zeros_like(mask, dtype=np.uint8), 0.0, None
-    x, y, w, h = cv2.boundingRect(coords)
-    H, W = mask.shape[:2]
-    coverage = (w * h) / float(max(1, H * W))
-    mask_full = np.zeros_like(mask, dtype=np.uint8)
-    cv2.drawContours(mask_full, [np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])], -1, 255, -1)
-    return mask_full, coverage, (x, y, x + w, y + h)
-
-
-def _best_content_mask(image: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int] | None, float]:
-    """尝试原向与顺时针 90°，选择覆盖率更高的内容 mask。"""
-    mask0, cov0, bbox0 = _content_mask_with_coverage(image)
-    rotated = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    mask_r, cov_r, bbox_r = _content_mask_with_coverage(rotated)
-    if cov_r > cov0:
-        mask_back = cv2.rotate(mask_r, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        coords = cv2.findNonZero(mask_back)
-        if coords is None:
-            return mask0, bbox0, cov0
-        x, y, w, h = cv2.boundingRect(coords)
-        return mask_back, (x, y, x + w, y + h), cov_r
-    return mask0, bbox0, cov0
 
 
 def _find_valley(mask: np.ndarray) -> Tuple[int, float]:
@@ -266,7 +232,7 @@ def split_single_and_double_pages(
             # 先在当前外接框附近做内容兜底，避免全图误伤
             local_bbox = (max(0, x0 - int(0.05 * W)), max(0, y0 - int(0.05 * H)), min(W, x1 + int(0.05 * W)), min(H, y1 + int(0.05 * H)))
             region_local = _crop_region(image, local_bbox)
-            mask_local, cov_local, bbox_local = _content_mask_with_coverage(region_local)
+            mask_local, cov_local, bbox_local = mask_utils.content_mask_with_coverage(region_local)
             if bbox_local is not None and cov_local > 0.35:
                 lx, ly, lx1, ly1 = bbox_local
                 lx += local_bbox[0]
@@ -284,7 +250,7 @@ def split_single_and_double_pages(
                 fallback_mask_applied = True
             # 若仍然过窄，再尝试全图 + 90° 旋转取较优覆盖
             if not fallback_mask_applied and height_ratio_full < 0.5:
-                alt_mask, cov_alt, alt_bbox = _best_content_mask(image)
+                alt_mask, cov_alt, alt_bbox = mask_utils.best_content_mask(image)
                 if alt_bbox is not None and cov_alt > height_ratio_full:
                     mask_region = alt_mask
                     x0, y0, x1, y1 = alt_bbox

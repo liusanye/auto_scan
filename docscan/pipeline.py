@@ -11,15 +11,38 @@ from typing import Any, Dict, List
 import cv2
 import numpy as np
 
+from dataclasses import dataclass
+
 from docscan import config as cfg
 from docscan import io_utils
+from docscan import mask_utils
 from docscan.segment import segment_pages
 from docscan.page_split import split_single_and_double_pages
-from docscan.dewarp import dewarp_page
+from docscan.dewarp import dewarp_page, gentle_curve_adjust
 from docscan.geom_refine import refine_geometry_with_opencv
 from docscan.enhance import enhance_scan_style
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class PageContext:
+    """统一管理页面级元数据，避免散落的 dict 误用。"""
+
+    bbox: tuple[int, int, int, int]
+    split_info: dict | None
+    segment_fallback: bool
+    segment_fallback_reason: str | None
+    refine_quad_global: list | None = None
+    refine_quad_backprojected: bool = False
+    dewarp_info: dict | None = None
+    curve_info: dict | None = None
+    refine_info: dict | None = None
+    enhanced_gray_path: str | None = None
+    enhanced_bw_path: str | None = None
+    error: str | None = None
+    stage_times: dict | None = None
+    edge_mask_info: dict | None = None
 
 
 def _save_debug_image(arr: np.ndarray, path: Path) -> None:
@@ -27,69 +50,106 @@ def _save_debug_image(arr: np.ndarray, path: Path) -> None:
     io_utils.save_image(arr, str(path))
 
 
-def _content_mask_with_coverage(image: np.ndarray, margin_ratio: float = 0.02, use_adaptive: bool = True) -> tuple[np.ndarray, float, tuple[int, int, int, int] | None]:
-    """基于内容生成兜底 mask，适度抑制纸边，返回覆盖率与 bbox。"""
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    if use_adaptive:
-        bin_inv = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 10)
-    else:
-        _, bin_inv = cv2.threshold(blur, 230, 255, cv2.THRESH_BINARY_INV)
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    mask = cv2.morphologyEx(bin_inv, cv2.MORPH_CLOSE, k, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
-    H, W = mask.shape[:2]
-    margin = int(min(H, W) * margin_ratio)
-    if margin > 0:
-        mask[:margin, :] = 0
-        mask[H - margin :, :] = 0
-        mask[:, :margin] = 0
-        mask[:, W - margin :] = 0
-    coords = cv2.findNonZero(mask)
-    if coords is None:
-        return np.zeros_like(mask, dtype=np.uint8), 0.0, None
-    x, y, w, h = cv2.boundingRect(coords)
-    coverage = (w * h) / float(max(1, H * W))
-    mask_full = np.zeros_like(mask, dtype=np.uint8)
-    cv2.rectangle(mask_full, (x, y), (x + w, y + h), 255, -1)
-    return mask_full, coverage, (x, y, x + w, y + h)
-
-
-def _tight_content_mask(image: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int, int, int] | None]:
-    """内容兜底：优先自适应，过大则尝试高阈值收紧，避免整页占满。"""
-    mask0, cov0, bbox0 = _content_mask_with_coverage(image, margin_ratio=0.02, use_adaptive=True)
-    # 若覆盖过大，尝试更高阈值收紧
-    if cov0 >= 0.92:
-        mask1, cov1, bbox1 = _content_mask_with_coverage(image, margin_ratio=0.03, use_adaptive=False)
-        if bbox1 is not None and 0.03 < cov1 < cov0:
-            return mask1, cov1, bbox1
-    return mask0, cov0, bbox0
-
-
-def _best_content_mask(image: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int] | None, float]:
-    """尝试原图与顺时针 90°，择优覆盖且避免撑满整页。"""
-    mask0, cov0, bbox0 = _tight_content_mask(image)
-    rotated = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    mask_r, cov_r, bbox_r = _tight_content_mask(rotated)
-    candidates = []
-    if bbox0 is not None and cov0 > 0.02:
-        candidates.append(("origin", mask0, cov0, bbox0))
-    if bbox_r is not None and cov_r > 0.02:
-        candidates.append(("rot90", cv2.rotate(mask_r, cv2.ROTATE_90_COUNTERCLOCKWISE), cov_r, bbox_r))
-    if not candidates:
-        return mask0, bbox0, cov0
-    # 选择覆盖率 0.2-0.92 区间内最接近 0.7 的候选，避免全页
-    def score(cov: float) -> float:
-        return abs(cov - 0.7)
-    filtered = [c for c in candidates if 0.2 <= c[2] <= 0.92]
-    chosen = min(filtered, key=lambda x: score(x[2])) if filtered else max(candidates, key=lambda x: x[2])
-    tag, mask_sel, cov_sel, bbox_sel = chosen
-    if tag == "rot90":
-        coords = cv2.findNonZero(mask_sel)
-        if coords is not None:
-            x, y, w, h = cv2.boundingRect(coords)
-            bbox_sel = (x, y, x + w, y + h)
-    return mask_sel, bbox_sel, cov_sel
+def _draw_overlay(
+    overlay: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    refine_quad_global: list | None,
+    segment_fallback: bool,
+    segment_fallback_msg: str | None,
+    refine_quad_backprojected: bool,
+) -> None:
+    """在原图上绘制裁剪框/四边形与提示信息。"""
+    line_thickness = 5
+    bx0, by0, bx1, by1 = bbox
+    cv2.rectangle(overlay, (bx0, by0), (bx1, by1), (0, 200, 0), line_thickness)
+    if refine_quad_global:
+        quad_np = np.array(refine_quad_global, dtype=int)
+        cv2.polylines(overlay, [quad_np], isClosed=True, color=(255, 0, 255), thickness=line_thickness)
+        for idx_c, (cx, cy) in enumerate(quad_np, start=1):
+            cv2.circle(overlay, (int(cx), int(cy)), 10, (50, 50, 255), -1)
+            cv2.putText(
+                overlay,
+                f"P1-{idx_c}",
+                (int(cx) + 12, int(cy) - 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,
+                (0, 0, 0),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                overlay,
+                f"P1-{idx_c}",
+                (int(cx) + 12, int(cy) - 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+    # 图例
+    cv2.putText(
+        overlay,
+        "Green=crop area  Pink=refine quad (actual warp)",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 0, 0),
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        "Green=crop area  Pink=refine quad (actual warp)",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (255, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    if segment_fallback:
+        cv2.putText(
+            overlay,
+            f"segment fallback ({segment_fallback_msg or 'auto'})",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            overlay,
+            f"segment fallback ({segment_fallback_msg or 'auto'})",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    if refine_quad_global and not refine_quad_backprojected:
+        cv2.putText(
+            overlay,
+            "refine quad 未反投影(仅供参考)",
+            (20, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            overlay,
+            "refine quad 未反投影(仅供参考)",
+            (20, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
 
 def warmup_models(config_path: str | None, mode: str, profile: str | None) -> None:
@@ -115,14 +175,28 @@ def process_image_file(
     profile: str | None = None,
     config_path: str | None = None,
     debug: bool = False,
+    debug_level: str | None = None,
+    dry_run: bool = False,
     max_pages: int | None = None,
 ) -> List[Dict[str, Any]]:
     """
     读图 → segment → split → dewarp → geom_refine → enhance。
     """
     conf = cfg.load_config(config_path, mode=mode, profile=profile)
-    conf["run"]["debug"] = debug
+    # debug_level：优先 CLI debug_level，其次 debug 开关（debug=True 默认 full）
+    if debug_level:
+        conf["run"]["debug_level"] = debug_level
+        conf["run"]["debug"] = debug_level != "none"
+    elif debug:
+        conf["run"]["debug"] = True
+        conf["run"]["debug_level"] = conf["run"].get("debug_level") or "full"
+    else:
+        conf["run"]["debug"] = conf["run"].get("debug", False)
+        conf["run"]["debug_level"] = conf["run"].get("debug_level", "none")
     conf["run"]["max_pages"] = max_pages
+    conf["run"]["dry_run"] = dry_run
+    debug_level = (conf["run"].get("debug_level") or "none").lower()
+    debug_enabled = debug_level != "none"
 
     image = io_utils.load_image(image_path)
     # 入口尺寸保护：限制最大边并保证最小边不过小
@@ -167,17 +241,19 @@ def process_image_file(
     t0 = time.time()
     stage_times: Dict[str, float] = {}
     t_seg = time.time()
+    segment_info: Dict[str, Any] = {}
     page_regions = segment_pages(
         image,
         max_side=conf["limits"]["rembg_max_side"],
         min_area_ratio=conf["segment"]["min_area_ratio"],
         morph_kernel=conf["segment"]["morph_kernel"],
+        preview_side=conf["run"].get("segment_preview_side"),
     )
     stage_times["segment"] = time.time() - t_seg
     segment_fallback = False
     segment_fallback_msg: str | None = None
     if not page_regions:
-        mask_fb, bbox_fb, cov_fb = _best_content_mask(image)
+        mask_fb, bbox_fb, cov_fb = mask_utils.best_content_mask(image)
         if bbox_fb is not None and cov_fb > 0.05:
             page_regions = [(mask_fb, bbox_fb)]
             log.warning("pipeline: segment 无结果，使用内容兜底 mask 覆盖率=%.3f bbox=%s", cov_fb, bbox_fb)
@@ -215,14 +291,21 @@ def process_image_file(
     stage_times["split"] = time.time() - t_split
     log.info("pipeline: segmented pages=%d", len(pages))
 
-    if conf["run"]["debug"]:
-        # 覆盖保存分割 mask，避免旧文件残留
-        if page_regions:
-            combined_mask = np.zeros_like(page_regions[0][0])
-            for mask_region, _bbox in page_regions:
-                combined_mask = cv2.bitwise_or(combined_mask, mask_region)
-        else:
-            combined_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    combined_mask = None
+    if page_regions:
+        combined_mask = np.zeros_like(page_regions[0][0])
+        for mask_region, _bbox in page_regions:
+            combined_mask = cv2.bitwise_or(combined_mask, mask_region)
+    else:
+        combined_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    segment_coverage = float(cv2.countNonZero(combined_mask)) / float(max(1, h * w))
+    segment_info = {
+        "regions": len(page_regions),
+        "fallback": segment_fallback,
+        "fallback_reason": segment_fallback_msg,
+        "coverage": segment_coverage,
+    }
+    if debug_enabled:
         _save_debug_image(combined_mask, out_dir / "01_debug_mask.png")
         overlay = image.copy()
     else:
@@ -233,20 +316,47 @@ def process_image_file(
             break
         page_id = f"page_{idx+1:03d}"
         file_prefix = f"{image_stem}_{page_id}"
-        stage_local: Dict[str, float] = {}
-        refine_quad_local = None
-        refine_quad_global = None
-        page_result: Dict[str, Any] = {
-            "page_index": idx,
-            "page_id": page_id,
-            "split": page.get("info"),
-            "bbox": page.get("bbox"),
-            "segment_fallback": segment_fallback,
-            "segment_fallback_reason": segment_fallback_msg,
-        }
+        page_ctx = PageContext(
+            bbox=page.get("bbox"),
+            split_info=page.get("info"),
+            segment_fallback=segment_fallback,
+            segment_fallback_reason=segment_fallback_msg,
+            stage_times={},
+        )
+        # 边缘置信度衰减，避免贴边背景
+        edge_info = None
+        if page.get("mask") is not None:
+            new_mask, edge_info = mask_utils.attenuate_mask_edges(page["image"], page["mask"])
+            page["mask"] = new_mask
+        page_ctx.edge_mask_info = edge_info
         t_page = time.time()
         try:
-            if conf["run"]["debug"]:
+            if dry_run:
+                # 只做分割/裁剪调试，不执行后续重处理
+                page_ctx.dewarp_info = {"method": "dry_run_skip"}
+                page_ctx.refine_info = {"method": "dry_run_skip"}
+                page_ctx.stage_times = {}
+                results.append(
+                    {
+                        "page_index": idx,
+                        "page_id": page_id,
+                        "split": page_ctx.split_info,
+                        "bbox": page_ctx.bbox,
+                        "segment_fallback": page_ctx.segment_fallback,
+                        "segment_fallback_reason": page_ctx.segment_fallback_reason,
+                        "edge_mask": page_ctx.edge_mask_info,
+                        "dewarp": page_ctx.dewarp_info,
+                        "refine": page_ctx.refine_info,
+                        "dry_run": True,
+                        "stage_times": page_ctx.stage_times,
+                    }
+                )
+                continue
+
+            stage_local: Dict[str, float] = {}
+            refine_quad_local = None
+            refine_quad_global = None
+            if debug_level == "full":
                 _save_debug_image(page["image"], out_dir / f"10_{file_prefix}_raw.png")
 
             dewarp_enabled = conf["dewarp"].get("enabled", True) and not conf["split"].get("force_whole_page", False)
@@ -263,6 +373,16 @@ def process_image_file(
                 dewarped_mask = page.get("mask")
                 dewarp_info = {"method": "skip_disabled"}
             stage_local["dewarp"] = time.time() - t_dewarp
+            # 轻量曲率微调
+            curve_info = None
+            t_curve = time.time()
+            if conf["dewarp"].get("enable_curve_adjust", True) and dewarped_mask is not None:
+                dewarped, dewarped_mask, curve_info = gentle_curve_adjust(
+                    dewarped,
+                    dewarped_mask,
+                    max_shift_px=int(conf["dewarp"].get("curve_max_shift_px", 6)),
+                )
+            stage_local["curve_adjust"] = time.time() - t_curve
             t_refine = time.time()
             if refine_enabled:
                 page_refined, refine_info = refine_geometry_with_opencv(
@@ -287,113 +407,95 @@ def process_image_file(
             io_utils.save_image(bw, bw_path)
             stage_local["enhance"] = time.time() - t_enh
 
-            if conf["run"]["debug"]:
+            if debug_level == "full":
                 _save_debug_image(dewarped, out_dir / f"11_{file_prefix}_dewarp.png")
                 _save_debug_image(page_refined, out_dir / f"12_{file_prefix}_refine.png")
                 _save_debug_image(gray, out_dir / f"13_{file_prefix}_gray.png")
                 _save_debug_image(bw, out_dir / f"14_{file_prefix}_bw.png")
 
             refine_quad_local = refine_info.get("quad") if refine_enabled else None
+            refine_quad_backprojected = False
             if refine_quad_local and isinstance(refine_quad_local, list):
                 bx0, by0, _, _ = page["bbox"]
-                refine_quad_global = [[int(pt[0] + bx0), int(pt[1] + by0)] for pt in refine_quad_local]
-            page_result.update(
-                {
-                    "enhanced_gray_path": str(gray_path),
-                    "enhanced_bw_path": str(bw_path),
-                    "dewarp": dewarp_info,
-                    "refine": refine_info,
-                    "refine_quad": refine_quad_local,
-                    "refine_quad_global": refine_quad_global,
-                }
-            )
+                quad_local_np = np.array(refine_quad_local, dtype=np.float32)
+                # 尝试用去透视矩阵把粉框从“拉直后的坐标”反投影回裁剪页，再加上 bbox 偏移落到原图
+                dewarp_matrix = dewarp_info.get("matrix")
+                if dewarp_matrix is not None:
+                    try:
+                        M = np.array(dewarp_matrix, dtype=np.float32)
+                        M_inv = np.linalg.inv(M)
+                        quad_orig = cv2.perspectiveTransform(quad_local_np.reshape(1, -1, 2), M_inv)[0]
+                        refine_quad_global = [[int(pt[0] + bx0), int(pt[1] + by0)] for pt in quad_orig]
+                        refine_quad_backprojected = True
+                    except Exception:  # noqa: BLE001
+                        log.exception("refine quad 反投影失败，退回 dewarp quad 显示")
+                if not refine_quad_backprojected:
+                    quad_src = dewarp_info.get("quad") or refine_quad_local
+                    quad_src_np = np.array(quad_src, dtype=np.float32)
+                    refine_quad_global = [[int(pt[0] + bx0), int(pt[1] + by0)] for pt in quad_src_np]
+            page_ctx.dewarp_info = dewarp_info
+            page_ctx.curve_info = curve_info
+            page_ctx.refine_info = refine_info
+            page_ctx.refine_quad_global = refine_quad_global
+            page_ctx.refine_quad_backprojected = refine_quad_backprojected
+            page_ctx.enhanced_gray_path = str(gray_path)
+            page_ctx.enhanced_bw_path = str(bw_path)
+            page_ctx.stage_times = stage_local
 
-            page_result["elapsed"] = time.time() - t_page
-            page_result["stage_times"] = stage_local
+            page_result = {
+                "page_index": idx,
+                "page_id": page_id,
+                "split": page_ctx.split_info,
+                "bbox": page_ctx.bbox,
+                "segment_fallback": page_ctx.segment_fallback,
+                "segment_fallback_reason": page_ctx.segment_fallback_reason,
+                "edge_mask": page_ctx.edge_mask_info,
+                "enhanced_gray_path": page_ctx.enhanced_gray_path,
+                "enhanced_bw_path": page_ctx.enhanced_bw_path,
+                "dewarp": page_ctx.dewarp_info,
+                "curve_adjust": page_ctx.curve_info,
+                "refine": page_ctx.refine_info,
+                "refine_quad_global": page_ctx.refine_quad_global,
+                "refine_quad_backprojected": page_ctx.refine_quad_backprojected,
+                "elapsed": time.time() - t_page,
+                "stage_times": page_ctx.stage_times,
+            }
             results.append(page_result)
         except Exception as e:  # noqa: BLE001
             log.exception("处理页面失败 %s #%s", image_path, page_id)
-            page_result["error"] = str(e)
-            page_result["stage_times"] = stage_local
+            page_ctx.error = str(e)
+            page_ctx.stage_times = page_ctx.stage_times or stage_local
+            page_result = {
+                "page_index": idx,
+                "page_id": page_id,
+                "split": page_ctx.split_info,
+                "bbox": page_ctx.bbox,
+                "segment_fallback": page_ctx.segment_fallback,
+                "segment_fallback_reason": page_ctx.segment_fallback_reason,
+                "edge_mask": page_ctx.edge_mask_info,
+                "dewarp": page_ctx.dewarp_info,
+                "curve_adjust": page_ctx.curve_info,
+                "refine": page_ctx.refine_info,
+                "refine_quad_global": page_ctx.refine_quad_global,
+                "refine_quad_backprojected": page_ctx.refine_quad_backprojected,
+                "error": page_ctx.error,
+                "elapsed": time.time() - t_page,
+                "stage_times": page_ctx.stage_times,
+            }
             results.append(page_result)
 
         # 绘制调试 overlay：裁剪 bbox + refine 四边形
-        if conf["run"]["debug"] and overlay is not None:
-            line_thickness = 5
-            bx0, by0, bx1, by1 = page["bbox"]
-            cv2.rectangle(overlay, (bx0, by0), (bx1, by1), (0, 200, 0), line_thickness)
-            if refine_quad_global:
-                quad_np = np.array(refine_quad_global, dtype=int)
-                cv2.polylines(overlay, [quad_np], isClosed=True, color=(255, 0, 255), thickness=line_thickness)
-                for idx_c, (cx, cy) in enumerate(quad_np, start=1):
-                    cv2.circle(overlay, (int(cx), int(cy)), 10, (50, 50, 255), -1)
-                    cv2.putText(
-                        overlay,
-                        f"P{idx+1}-{idx_c}",
-                        (int(cx) + 12, int(cy) - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 0, 0),
-                        3,
-                        cv2.LINE_AA,
-                    )
-                    cv2.putText(
-                        overlay,
-                        f"P{idx+1}-{idx_c}",
-                        (int(cx) + 12, int(cy) - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (255, 255, 0),
-                        2,
-                        cv2.LINE_AA,
-                    )
-            # 图例
-            cv2.putText(
+        if debug_enabled and overlay is not None:
+            _draw_overlay(
                 overlay,
-                "Green=crop area  Pink=refine quad (actual warp)",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 0),
-                3,
-                cv2.LINE_AA,
+                page_ctx.bbox,
+                page_ctx.refine_quad_global,
+                page_ctx.segment_fallback,
+                page_ctx.segment_fallback_reason,
+                page_ctx.refine_quad_backprojected,
             )
-            cv2.putText(
-                overlay,
-                "Green=crop area  Pink=refine quad (actual warp)",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (255, 255, 0),
-                2,
-                cv2.LINE_AA,
-            )
-            if segment_fallback:
-                cv2.putText(
-                    overlay,
-                    f"segment fallback ({segment_fallback_msg or 'auto'})",
-                    (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 0),
-                    3,
-                    cv2.LINE_AA,
-                )
-                cv2.putText(
-                    overlay,
-                    f"segment fallback ({segment_fallback_msg or 'auto'})",
-                    (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-            if refine_quad_global:
-                quad_np = np.array(refine_quad_global, dtype=int)
-                cv2.polylines(overlay, [quad_np], isClosed=True, color=(255, 0, 255), thickness=line_thickness)
 
-    if conf["run"]["debug"] and overlay is not None:
+    if debug_enabled and overlay is not None:
         _save_debug_image(overlay, out_dir / "02_debug_bbox.png")
 
     summary = {
@@ -401,10 +503,17 @@ def process_image_file(
         "mode": mode,
         "mode_effective": effective_mode,
         "profile": profile,
+        "debug_level": debug_level,
+        "dry_run": dry_run,
+        "image_shape_raw": [h_raw, w_raw],
+        "image_shape_processed": [h, w],
+        "segment": segment_info,
         "pages": results,
         "elapsed_total": time.time() - t0,
         "stage_times": stage_times,
     }
+    if debug_enabled:
+        summary["debug_overlay"] = str(out_dir / "02_debug_bbox.png")
     summary_path = out_dir / "run_summary.json"
     try:
         summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

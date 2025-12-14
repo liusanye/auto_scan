@@ -22,6 +22,8 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--profile", default=None, help="业务场景 profile")
     parser.add_argument("--debug", action="store_true", help="开启调试输出")
+    parser.add_argument("--debug-level", choices=["none", "bbox", "full"], default=None, help="调试输出粒度，none/bbox/full")
+    parser.add_argument("--dry-run", action="store_true", help="仅分割/裁剪调试，不执行去透视与增强")
     parser.add_argument("--max-pages", type=int, default=None, help="最多处理的页数")
     parser.add_argument("--warmup", action="store_true", help="预热模型，避免首帧过慢")
     args = parser.parse_args()
@@ -42,6 +44,8 @@ def main() -> None:
             profile=args.profile,
             config_path=args.config,
             debug=args.debug,
+            debug_level=args.debug_level,
+            dry_run=args.dry_run,
             max_pages=args.max_pages,
         )
 

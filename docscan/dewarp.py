@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Callable
 
 import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
-
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     """将四边形点排序为 tl,tr,br,bl。"""
@@ -36,7 +35,7 @@ def _warp_from_quad(image: np.ndarray, quad: np.ndarray) -> tuple[np.ndarray, np
     dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype="float32")
     M = cv2.getPerspectiveTransform(quad.astype("float32"), dst)
     warped = cv2.warpPerspective(image, M, (maxW, maxH))
-    return warped, M, {"method": "trapezoid_warp", "quad": quad.tolist()}
+    return warped, M, {"method": "trapezoid_warp", "quad": quad.tolist(), "matrix": M.tolist()}
 
 
 def _fallback_perspective(image: np.ndarray, mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, str]]:
@@ -57,7 +56,7 @@ def _fallback_perspective(image: np.ndarray, mask: Optional[np.ndarray] = None) 
         cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not cnts:
-        return image, mask, {"method": "fallback_none"}
+        return image, mask, {"method": "fallback_none", "matrix": None}
 
     c = max(cnts, key=cv2.contourArea)
     # 优先尝试梯形校正：四边形拟合
@@ -70,9 +69,11 @@ def _fallback_perspective(image: np.ndarray, mask: Optional[np.ndarray] = None) 
             warped_mask = cv2.warpPerspective(mask, M, (warped_img.shape[1], warped_img.shape[0]))
         # 覆盖率检查，过小则回退矩形方案
         coverage = cv2.contourArea(c) / float(max(1.0, img_h * img_w))
-        if coverage >= 0.01:
+        if coverage >= 0.03:
             info["coverage"] = coverage
             info["source"] = source
+            if M is not None:
+                info["matrix"] = M.tolist()
             return warped_img, warped_mask, info
 
     rect = cv2.minAreaRect(c)
@@ -82,11 +83,11 @@ def _fallback_perspective(image: np.ndarray, mask: Optional[np.ndarray] = None) 
     h = int(rect[1][1])
     coverage = cv2.contourArea(c) / float(max(1.0, img_h * img_w))
     if w == 0 or h == 0:
-        return image, mask, {"method": "fallback_invalid_size"}
+        return image, mask, {"method": "fallback_invalid_size", "matrix": None, "coverage": coverage, "source": source}
     # 若 coverage 过小，直接返回原图，避免粉框收缩过度
-    if coverage < 0.01:
+    if coverage < 0.03:
         log.warning("fallback_perspective: coverage too small (%.4f), skip warp", coverage)
-        return image, mask, {"method": "fallback_skip_small", "coverage": coverage}
+        return image, mask, {"method": "fallback_skip_small", "coverage": coverage, "matrix": None, "source": source}
 
     dst = np.array([[0, h - 1], [0, 0], [w - 1, 0], [w - 1, h - 1]], dtype="float32")
     M = cv2.getPerspectiveTransform(box.astype("float32"), dst)
@@ -94,25 +95,74 @@ def _fallback_perspective(image: np.ndarray, mask: Optional[np.ndarray] = None) 
     warped_mask = None
     if mask is not None:
         warped_mask = cv2.warpPerspective(mask, M, (w, h))
-    return warped, warped_mask, {"method": "fallback_perspective", "source": source, "coverage": coverage}
+    return warped, warped_mask, {"method": "fallback_perspective", "source": source, "coverage": coverage, "matrix": M.tolist()}
+
+def gentle_curve_adjust(
+    page_image: np.ndarray,
+    page_mask: Optional[np.ndarray],
+    max_shift_px: int = 6,
+    min_span_ratio: float = 0.6,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, object]]:
+    """
+    轻量曲率微调：基于 mask 上下边缘拟合二次曲线，小幅矫正弯曲。
+    无 mask 或位移过小时跳过。
+    """
+    if page_mask is None or page_mask.size == 0:
+        return page_image, page_mask, {"method": "curve_skip", "reason": "no_mask"}
+    mask_bin = (page_mask > 0).astype(np.uint8)
+    H, W = mask_bin.shape[:2]
+    xs = np.arange(W)
+    y_min = np.full(W, -1, dtype=np.int32)
+    y_max = np.full(W, -1, dtype=np.int32)
+    for x in xs:
+        ys = np.where(mask_bin[:, x] > 0)[0]
+        if ys.size > 0:
+            y_min[x] = ys.min()
+            y_max[x] = ys.max()
+    valid = np.where(y_min >= 0)[0]
+    if valid.size < int(W * min_span_ratio):
+        return page_image, page_mask, {"method": "curve_skip", "reason": "insufficient_columns"}
+    x_use = xs[valid]
+    top = y_min[valid].astype(np.float32)
+    bottom = y_max[valid].astype(np.float32)
+    # 基线（直线）采用两端点插值
+    def _baseline(y_arr: np.ndarray) -> np.ndarray:
+        return np.interp(xs, [x_use[0], x_use[-1]], [y_arr[0], y_arr[-1]])
+    top_base = _baseline(top)
+    bottom_base = _baseline(bottom)
+    top_poly = np.poly1d(np.polyfit(x_use, top, deg=2))(xs)
+    bottom_poly = np.poly1d(np.polyfit(x_use, bottom, deg=2))(xs)
+    delta_top = np.clip(top_poly - top_base, -max_shift_px, max_shift_px)
+    delta_bottom = np.clip(bottom_poly - bottom_base, -max_shift_px, max_shift_px)
+    max_shift = float(np.max(np.abs([delta_top, delta_bottom])))
+    if max_shift < 1.0:
+        return page_image, page_mask, {"method": "curve_skip", "reason": "tiny_shift"}
+
+    # 构建映射，按 y 在上下边之间的比例插值位移
+    grid_x, grid_y = np.meshgrid(xs, np.arange(H))
+    top_line = np.clip(top_base, 0, H - 1)
+    bottom_line = np.clip(bottom_base, 0, H - 1)
+    span = np.maximum(bottom_line - top_line, 1.0)
+    t = (grid_y - top_line) / span
+    t = np.clip(t, 0.0, 1.0)
+    delta = delta_top * (1.0 - t) + delta_bottom * t
+    map_x = grid_x.astype(np.float32)
+    map_y = (grid_y - delta).astype(np.float32)
+    map_y = np.clip(map_y, 0, H - 1).astype(np.float32)
+    warped_img = cv2.remap(page_image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    warped_mask = cv2.remap(mask_bin, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return warped_img, warped_mask, {
+        "method": "curve_polywarp",
+        "max_shift": max_shift,
+        "applied": True,
+        "columns_used": int(valid.size),
+        "width": W,
+    }
 
 
 def dewarp_page(page_image: np.ndarray, page_mask: Optional[np.ndarray] = None, use_polyline: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, str]]:
     """
-    尝试使用专用 dewarp 库，失败则回退透视矫正。
+    直接使用透视矫正，必要时结合曲率微调。
     返回: (图像, mask, 信息字典: method 等)
     """
-    # 预留 page-dewarp 接入点，可选依赖，失败自动回退
-    try:
-        import importlib
-
-        dewarp_mod = importlib.import_module("page_dewarp")
-        if hasattr(dewarp_mod, "dewarp"):
-            result = dewarp_mod.dewarp(page_image, use_polyline=use_polyline)  # type: ignore[attr-defined]
-            if isinstance(result, tuple) and len(result) >= 1:
-                dewarped = result[0]
-                dewarp_mask = result[1] if len(result) > 1 else page_mask
-                return dewarped, dewarp_mask, {"method": "page_dewarp"}
-    except Exception as exc:  # noqa: BLE001
-        log.warning("dewarp: page-dewarp 不可用，使用透视回退: %s", exc)
     return _fallback_perspective(page_image, page_mask)

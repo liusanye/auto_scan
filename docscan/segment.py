@@ -13,9 +13,12 @@ PageRegion = Tuple[np.ndarray, Tuple[int, int, int, int]]
 log = logging.getLogger(__name__)
 
 
-def _preprocess_image(image: np.ndarray, max_side: int) -> Tuple[np.ndarray, float]:
+def _preprocess_image(image: np.ndarray, max_side: int, preview_side: int | None = None) -> Tuple[np.ndarray, float]:
     h, w = image.shape[:2]
-    scale = min(1.0, max_side / max(h, w))
+    side_limit = max_side
+    if preview_side is not None and preview_side > 0:
+        side_limit = min(side_limit, preview_side)
+    scale = min(1.0, side_limit / max(h, w))
     if scale < 1.0:
         image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return image, scale
@@ -71,12 +74,19 @@ def _merge_small_regions(regions: List[PageRegion], small_merge_ratio: float) ->
     return merged
 
 
-def segment_pages(image: np.ndarray, max_side: int = 1600, min_area_ratio: float = 0.01, morph_kernel: int = 5, small_merge_ratio: float = 0.25) -> List[PageRegion]:
+def segment_pages(
+    image: np.ndarray,
+    max_side: int = 1600,
+    min_area_ratio: float = 0.01,
+    morph_kernel: int = 5,
+    small_merge_ratio: float = 0.25,
+    preview_side: int | None = None,
+) -> List[PageRegion]:
     """
     使用预训练分割模型获取页面区域，并返回按面积排序的区域列表。
     """
     log.info("segment: start, image shape=%s", image.shape)
-    small, scale = _preprocess_image(image, max_side)
+    small, scale = _preprocess_image(image, max_side, preview_side=preview_side)
     try:
         rgba = remove(small)
         alpha = rgba[:, :, 3]

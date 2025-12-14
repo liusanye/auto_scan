@@ -41,7 +41,7 @@
 ### 1.3 流水线总览
 
 1) 页面分割 & 双页检测（模型主导）：rembg 前景分割 → mask 连通域 → 单/双页块。  
-2) 页面矫正（去透视/卷曲，模型/专用库主导）：page-dewarp 或替代库，失败回退透视矩阵；可选轻量曲率拟合。  
+2) 页面矫正（去透视/卷曲）：透视矩阵回退为主，可选轻量曲率拟合（自研/轻量算子），不依赖 page-dewarp。  
 3) 几何精修（OpenCV 润色）：轮廓拟合、A4 比例微调、deskew、统一留白。  
 4) 图像增强（扫描王风格）：division 归一化 + CLAHE + Sauvola + 轻量锐化；输出灰度增强与二值版。  
 5) OCR + 表格识别：PaddleOCR PP-Structure；分辨率上限控制；可灰度/二值对比取优。  
@@ -59,7 +59,7 @@ docscan/
   │    ├─ io_utils.py                 # 文件读写、图像加载保存
   │    ├─ segment.py                  # rembg + 连通域 + 形态学平滑
   │    ├─ page_split.py               # 单/双页判定与拆分（宽高比+投影谷值+对称性）
-  │    ├─ dewarp.py                   # page-dewarp，失败回退透视矩阵/轻量曲率
+  │    ├─ dewarp.py                   # 透视回退 + 轻量曲率微调，无 page-dewarp 依赖
   │    ├─ geom_refine.py              # 轮廓拟合、A4 微调、deskew、留白
   │    ├─ enhance.py                  # division + CLAHE + Sauvola + 锐化/光照自适应
   │    ├─ ocr_paddle.py               # PP-Structure 封装，分辨率上限，灰度/二值对比
@@ -81,7 +81,7 @@ docscan/
   - `rembg`（依赖 onnxruntime，建议锁 silicon 轮子，提供线程/后端配置）。  
   - `opencv-python-headless`（或 opencv-python，如冲突则换 headless）。  
   - `paddlepaddle`（macOS CPU 轮子）+ `paddleocr`。  
-  - `page-dewarp`（若不可用，保持接口，内部回退）。  
+- 无需 page-dewarp，默认透视回退；可选轻量曲率微调（纯 OpenCV/Numpy）。  
   - `numpy`、`Pillow`、`scikit-image`、`tqdm`、`pyyaml`。  
 - 可选：`pip-tools/poetry` 生成锁文件。  
 - README 必列：已验证版本、M 芯片安装命令、首次跑 PaddleOCR 建议空跑预热。  
@@ -114,7 +114,7 @@ def split_single_and_double_pages(image: np.ndarray, page_regions: List[PageRegi
 
 ### 4.3 dewarp.py —— 去透视/去卷曲
 
-- 优先 page-dewarp；异常/空输出回退：mask 四边形透视矫正（minAreaRect → getPerspectiveTransform）；可选行偏移多项式小曲率修正。  
+- 透视矫正：mask 四边形透视矫正（minAreaRect → getPerspectiveTransform）；可选行偏移多项式小曲率修正（轻量，无外部依赖）。  
 - 失败日志，返回原图；参数化网格/缩放/迭代。  
 
 接口：
@@ -199,7 +199,7 @@ def process_image_file(image_path: str, output_root: str, mode: str="quality") -
 
 - 样例：`examples/` 准备 3–5 张（单页、双页、强光差、旋转 ~10°）。  
 - 最小集成测试：跑 `process_image_file`，断言输出存在、日志无 ERROR；验证 dewarp/OCR 失败回退路径。  
-- 依赖验证：在目标硬件先跑安装与空跑，README 记录成功命令与版本；如 page-dewarp 不兼容，默认透视回退但接口保留。  
+- 依赖验证：在目标硬件先跑安装与空跑，README 记录成功命令与版本；无需 page-dewarp，默认透视回退即可。  
 
 ---
 
@@ -214,7 +214,7 @@ def process_image_file(image_path: str, output_root: str, mode: str="quality") -
 
 ## 9. 落地可行性与运行保障（针对 MacBook Air M3）
 
-- 依赖可用性：onnxruntime-silicon、paddlepaddle-macos、opencv-python-headless 可在 M3 安装；page-dewarp 若不可用自动回退透视矩阵，不阻塞流程。
+- 依赖可用性：onnxruntime-silicon、paddlepaddle-macos、opencv-python-headless 可在 M3 安装；不依赖 page-dewarp。  
 - 预热与缓存：提供 `--warmup` 选项，对 rembg/OCR 空跑预热；配置模型缓存目录，避免重复下载。
 - 分辨率与内存保护：入口强制最长边上限（建议 2048–2560）、最小边下限；rembg、OCR 各自独立的尺寸上限；超限等比压缩。
 - 线程与并发：推荐环境变量 `OMP_NUM_THREADS=1`；OCR 默认串行，其余环节可小并发；run_batch 可配置并发度，默认保守。
