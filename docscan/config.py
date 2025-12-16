@@ -29,6 +29,18 @@ DEFAULTS: Dict[str, Any] = {
         "min_area_ratio": 0.01,
         "morph_kernel": 5,
         "small_merge_ratio": 0.25,  # 小片段相对最大面积比例，低于则合并
+        "max_merge_gap_ratio": 0.12,  # 小块合并距离阈值（相对长边），超出则不并入主体
+        "clean": {  # 分割后清理参数（清理翻页/贴边突起）
+            "min_fill_ratio": 0.25,  # 主连通域占图比例低于该值则不做清理以避免误伤
+            "top_width_frac": 0.9,
+            "top_max_height_frac": 0.2,
+            "top_max_area_frac": 0.12,
+            "top_min_run": 3,
+            "bottom_width_frac": 0.9,
+            "bottom_max_height_frac": 0.2,
+            "bottom_max_area_frac": 0.12,
+            "bottom_min_run": 3,
+        },
     },
     "split": {
         "enable_double": True,  # 按方案默认开启双页判定
@@ -82,6 +94,34 @@ DEFAULTS: Dict[str, Any] = {
         "debug_level": "none",  # none | bbox | full
         "max_pages": None,
         "segment_preview_side": 2000,  # 分割用的预览分辨率上限（长边），减小耗时
+    },
+    "preproc": {
+        # 默认关闭预处理，回到早期“原图直接分割”的状态；如需开启，可在配置中显式设置 enable: true
+        "enable": False,
+        # 弱预处理参数（可选）：在开启时提供轻量拉伸/锐化，避免放大翻页块
+        "gamma_range": [0.95, 1.05],
+        "clahe_clip": 1.6,
+        "clahe_grid": 8,
+        "median_ksize": 3,  # 去噪核尺寸，<=1 表示跳过
+        "unsharp_radius": 2,  # 锐化高斯核半径
+        "unsharp_amount": 0.4,  # 锐化强度
+        "white_balance_pct": 1.0,  # 白平衡分位截断百分比
+        "edge_boost": {
+            "enable": False,  # 是否叠加边缘引导（默认关闭，弱边时手动打开）
+            "alpha": 0.08,
+            "dilate": 2,
+        },
+    },
+    "segment_retry": {
+        "enable": True,  # 当分割结果过小/形状不符纸张时自动重试
+        "max_trials": 3,  # 总尝试次数（含第一次）
+        "quality": {
+            "min_area_ratio": 0.15,  # 掩码面积占比阈值
+            "min_rect_ratio": 0.5,  # 矩形度下限
+            "min_size_ratio": 0.3,  # 外接框宽/高需各≥图像 30%
+            "center_dist_max": 0.4,  # 重心距中心（相对短边）上限
+            "ratio_range": [0.6, 1.8],  # 长宽比允许范围
+        },
     },
 }
 

@@ -94,6 +94,118 @@ def best_content_mask(
     return mask_sel, bbox_sel, cov_sel
 
 
+def select_main_region(mask: np.ndarray) -> tuple[np.ndarray, dict]:
+    """
+    按“纸张得分”筛主体：
+    - 面积占比
+    - 矩形度（区域面积/外接矩形面积、凸包面积/外接矩形面积）
+    - A4 比例匹配（长宽比接近 1.414 或倒数）
+    - 填充度（区域面积/凸包面积）
+    - 中心/触底约束：距中心越近、越靠底部得分越高
+    - 多区域时尝试合并最大+次大，再评分
+    返回筛选后的 mask 和评分信息。
+    """
+    info = {"selected": None, "regions": 0, "scores": []}
+    mask_bin = (mask > 0).astype("uint8")
+    cnts, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    h, w = mask.shape[:2]
+    if not cnts:
+        return mask_bin, info
+    total = h * w
+    best_score = -1.0
+    best_mask = None
+    regions = []
+    target_ratio = 1.414
+    cx_img, cy_img = w / 2.0, h / 2.0
+
+    def region_score(c) -> tuple[float, dict]:
+        area = cv2.contourArea(c)
+        x, y, bw, bh = cv2.boundingRect(c)
+        rect_area = max(1.0, bw * bh)
+        hull = cv2.convexHull(c)
+        hull_area = max(1.0, cv2.contourArea(hull))
+        rect_ratio = area / rect_area
+        hull_rect_ratio = hull_area / rect_area
+        fill_hull = area / hull_area
+        ratio = max(bw, bh) / max(1.0, min(bw, bh))
+        ratio_score = min(ratio / target_ratio, target_ratio / ratio)
+        cx, cy = x + bw / 2.0, y + bh / 2.0
+        center_dist = np.hypot(cx - cx_img, cy - cy_img) / max(1.0, min(h, w))
+        center_score = max(0.0, 1.0 - center_dist)
+        touch_bottom = (y + bh) / float(h)
+        score = (
+            0.32 * (area / total)
+            + 0.2 * rect_ratio
+            + 0.12 * hull_rect_ratio
+            + 0.12 * ratio_score
+            + 0.08 * fill_hull
+            + 0.1 * center_score
+            + 0.06 * touch_bottom
+        )
+        meta = {
+            "area": area,
+            "bbox": (x, y, x + bw, y + bh),
+            "ratio": ratio,
+            "rect_ratio": rect_ratio,
+            "center_score": center_score,
+            "touch_bottom": touch_bottom,
+        }
+        return score, meta
+
+    def draw_mask_from_cnts(cnt_list):
+        m = np.zeros_like(mask_bin)
+        for cc in cnt_list:
+            cv2.drawContours(m, [cc], -1, 255, -1)
+        return m
+
+    scored_cnts = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < 0.001 * total:
+            continue
+        sc, meta = region_score(c)
+        meta["score"] = sc
+        scored_cnts.append((c, sc, meta))
+        regions.append(meta | {"score": sc})
+
+    # 尝试最大+次大合并：仅当次大区域是“标题长条”时才合并，避免把翻页/背景条纹并入主体
+    scored_cnts.sort(key=lambda x: x[1], reverse=True)
+    if len(scored_cnts) >= 2:
+        c1, s1, m1 = scored_cnts[0]
+        c2, s2, m2 = scored_cnts[1]
+        area_ratio = m2["area"] / max(1.0, m1["area"])
+        # 仅保留“贴顶且与主体宽度重叠”的标题长条，其他细长区域一律不合并
+        is_strip = m2["ratio"] >= 3.0 and area_ratio <= 0.35
+        if is_strip:
+            x0, y0, x1, y1 = m1["bbox"]
+            sx0, sy0, sx1, sy1 = m2["bbox"]
+            overlap_w = min(x1, sx1) - max(x0, sx0)
+            overlap_ratio = overlap_w / float(max(1, x1 - x0))
+            height_ratio = (sy1 - sy0) / float(max(1, y1 - y0))
+            near_top = sy0 <= y0 + 0.25 * (y1 - y0)
+            title_like = overlap_ratio >= 0.5 and height_ratio <= 0.4 and near_top
+        else:
+            title_like = False
+        if is_strip and title_like:
+            merged = np.concatenate([c1, c2], axis=0)
+            sc_merged, meta_merged = region_score(merged)
+            regions.append(meta_merged | {"score": sc_merged, "merged": True})
+            if sc_merged > s1:
+                scored_cnts[0] = (merged, sc_merged, meta_merged)
+
+    for c, sc, meta in scored_cnts:
+        if sc > best_score:
+            best_score = sc
+            best_mask = draw_mask_from_cnts([c])
+            best_meta = meta
+    info["regions"] = len(regions)
+    info["scores"] = regions
+    info["selected"] = best_score
+    if best_mask is None:
+        return mask_bin, info
+    return best_mask, info
+
+
 def content_mask_local(
     image: np.ndarray,
     expand_px: int,

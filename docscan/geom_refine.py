@@ -48,12 +48,14 @@ def _warp_quad(image: np.ndarray, quad: np.ndarray, border_px: int = 12, target_
     maxH = int(max(heightA, heightB))
     dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype="float32")
     ratio = maxH / float(max(maxW, 1))
+    # 自适应横/竖版：横版使用 A4 横向比例（1/target_ratio），避免横向被拉成竖版
     if target_ratio > 0 and ratio_tolerance > 0:
-        if ratio < target_ratio * (1 - ratio_tolerance):
-            maxH = int(maxW * target_ratio)
+        r_target = target_ratio if ratio >= 1.0 else 1.0 / target_ratio
+        if ratio < r_target * (1 - ratio_tolerance):
+            maxH = int(maxW * r_target)
             dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype="float32")
-        elif ratio > target_ratio * (1 + ratio_tolerance):
-            maxW = int(maxH / target_ratio)
+        elif ratio > r_target * (1 + ratio_tolerance):
+            maxW = int(maxH / r_target)
             dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype="float32")
     M = cv2.getPerspectiveTransform(quad, dst)
     warped = cv2.warpPerspective(image, M, (maxW, maxH))

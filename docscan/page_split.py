@@ -415,7 +415,7 @@ def split_single_and_double_pages(
             bottom_extra = max(0.0, float(bottom_extra))
             lr_extra = max(0.0, float(lr_extra))
             # 如果当前 bbox 已覆盖大部分区域，直接取消扩边，避免膨胀
-            if cover_ratio >= 0.80:
+            if cover_ratio >= 0.75:
                 base_ratio_eff = 0.0
                 top_extra = 0.0
                 bottom_extra = 0.0
