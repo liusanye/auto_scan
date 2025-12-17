@@ -250,7 +250,7 @@ def split_single_and_double_pages(
                 fallback_mask_applied = True
             # 若仍然过窄，再尝试全图 + 90° 旋转取较优覆盖
             if not fallback_mask_applied and height_ratio_full < 0.5:
-                alt_mask, cov_alt, alt_bbox = mask_utils.best_content_mask(image)
+                alt_mask, alt_bbox, cov_alt = mask_utils.best_content_mask(image)
                 if alt_bbox is not None and cov_alt > height_ratio_full:
                     mask_region = alt_mask
                     x0, y0, x1, y1 = alt_bbox

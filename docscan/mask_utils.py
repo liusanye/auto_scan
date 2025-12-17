@@ -1,8 +1,8 @@
-"""基于内容的兜底 mask 与 bbox 生成工具。"""
+"""掩码相关工具：兜底内容 mask + 统一的纸张评分函数。"""
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Tuple, Dict, Any
 
 import cv2
 import numpy as np
@@ -48,6 +48,85 @@ def content_mask_with_coverage(
     mask_full = np.zeros_like(mask, dtype=np.uint8)
     cv2.rectangle(mask_full, (x, y), (x + w, y + h), 255, -1)
     return mask_full, coverage, (x, y, x + w, y + h)
+
+
+# ------------------------------------------------------------
+# 统一纸张评分：供预处理 auto 打分与正式质检复用
+# ------------------------------------------------------------
+
+
+def score_paper_mask(mask: np.ndarray, image_shape: tuple[int, int], qa_cfg: dict | None = None) -> tuple[float, Dict[str, Any]]:
+    """
+    对二值 mask 进行纸张质量评分：面积、矩形度、长宽比、中心偏移等。
+    返回 (score, detail)。score=0 表示无效/空。
+    具备“硬拒绝”规则，先决条件不满足直接判 0。
+    """
+    h, w = image_shape[:2]
+    total = float(h * w)
+    coords = cv2.findNonZero(mask)
+    if coords is None:
+        return 0.0, {"reason": ["empty"], "area_ratio": 0.0}
+    x, y, bw, bh = cv2.boundingRect(coords)
+    area = float(cv2.countNonZero(mask))
+    area_ratio = area / max(1.0, total)
+    rect_ratio = area / max(1.0, bw * bh)
+    aspect = max(bw, bh) / max(1.0, min(bw, bh))
+    cx, cy = x + bw / 2.0, y + bh / 2.0
+    cx_img, cy_img = w / 2.0, h / 2.0
+    center_dist = np.hypot(cx - cx_img, cy - cy_img) / max(1.0, min(h, w))
+
+    cfg_q = qa_cfg or {}
+    min_area = cfg_q.get("min_area_ratio", 0.15)
+    min_rect = cfg_q.get("min_rect_ratio", 0.5)
+    min_size_ratio = cfg_q.get("min_size_ratio", 0.3)
+    ratio_range = cfg_q.get("ratio_range", [0.6, 1.8])
+    center_max = cfg_q.get("center_dist_max", 0.4)
+
+    reasons = []
+    # 硬拒绝：明显太小或过瘦/过扁直接 0 分
+    if area_ratio < min_area or bw < w * min_size_ratio or bh < h * min_size_ratio:
+        reasons.append("size_fail")
+    if not (ratio_range[0] <= aspect <= ratio_range[1]):
+        reasons.append("aspect_out")
+    if rect_ratio < min_rect:
+        reasons.append("rect_ratio_low")
+    if center_dist > center_max:
+        reasons.append("center_off")
+    if (bh / float(h) < 0.35 and area_ratio < 0.35) or (bw / float(w) < 0.35 and area_ratio < 0.35):
+        reasons.append("strip_like")
+    if reasons:
+        return 0.0, {
+            "reason": reasons,
+            "area_ratio": area_ratio,
+            "rect_ratio": rect_ratio,
+            "aspect": aspect,
+            "center_dist": center_dist,
+            "bbox": (x, y, bw, bh),
+            "score": 0.0,
+        }
+
+    # 连续评分（用于 auto 排序）
+    ar_score = np.exp(-4.0 * abs(aspect - 1.414))
+    area_score = 1.0
+    if area_ratio > 0.98:
+        area_score = max(0.0, 1.0 - (area_ratio - 0.98) * 20)
+
+    score = (
+        3.0 * rect_ratio
+        + 2.0 * (area / max(1.0, bw * bh))
+        + 2.0 * ar_score
+        + 1.0 * area_score
+        + max(0.0, 1.0 - center_dist)
+    )
+    return score, {
+        "reason": [],
+        "area_ratio": area_ratio,
+        "rect_ratio": rect_ratio,
+        "aspect": aspect,
+        "center_dist": center_dist,
+        "bbox": (x, y, bw, bh),
+        "score": score,
+    }
 
 
 def _tight_content_mask(image: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int, int, int] | None]:

@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 import cv2
 import numpy as np
-from rembg import remove
+from rembg import remove, new_session
 
 PageRegion = Tuple[np.ndarray, Tuple[int, int, int, int]]
 log = logging.getLogger(__name__)
@@ -196,6 +196,13 @@ def segment_pages(
     max_merge_gap_ratio: float = 0.12,
     preview_side: int | None = None,
     clean_cfg: dict | None = None,
+    rembg_model: str = "u2net",
+    rembg_session=None,
+    alpha_matting: bool = False,
+    alpha_matting_foreground_threshold: int = 240,
+    alpha_matting_background_threshold: int = 10,
+    alpha_matting_erode_size: int = 10,
+    alpha_matting_base_size: int = 1000,
 ) -> List[PageRegion]:
     """
     使用预训练分割模型获取页面区域，并返回按面积排序的区域列表。
@@ -203,9 +210,27 @@ def segment_pages(
     log.info("segment: start, image shape=%s", image.shape)
     small, scale = _preprocess_image(image, max_side, preview_side=preview_side)
     try:
-        rgba = remove(small)
-        alpha = rgba[:, :, 3]
-        mask_small = _post_mask(alpha, morph_kernel)
+        session = rembg_session
+        if session is None and rembg_model:
+            session = new_session(rembg_model)
+        mask_small = remove(
+            small,
+            session=session,
+            only_mask=True,
+            alpha_matting=alpha_matting,
+            alpha_matting_foreground_threshold=alpha_matting_foreground_threshold,
+            alpha_matting_background_threshold=alpha_matting_background_threshold,
+            alpha_matting_erode_size=alpha_matting_erode_size,
+            alpha_matting_base_size=alpha_matting_base_size,
+        )
+        if mask_small.ndim == 3 and mask_small.shape[2] == 4:
+            alpha = mask_small[:, :, 3]
+            mask_small = _post_mask(alpha, morph_kernel)
+        elif mask_small.ndim == 3:
+            # 如果返回三通道，取第一通道
+            mask_small = _post_mask(mask_small[:, :, 0], morph_kernel)
+        else:
+            mask_small = _post_mask(mask_small, morph_kernel)
     except Exception:  # noqa: BLE001
         log.exception("segment: rembg 失败，使用整图兜底")
         mask_small = np.ones(small.shape[:2], dtype=np.uint8) * 255

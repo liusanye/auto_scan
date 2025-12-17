@@ -43,7 +43,9 @@ docscan/
 - 回退链：dewarp→透视→原图；segment 失败→全图裁剪+留白。
 - 调试与观测：debug 输出 mask/投影曲线/四边形/deskew 角度/矫正前后对比；run-summary 记录耗时、置信度、降级、输出路径。
 - 预热：CLI 提供 `--warmup` 对分割空跑，避免首帧极慢。
+- 分割策略与兜底：按 `u2net → u2netp+alpha matting → light+u2netp+alpha matting` 顺序尝试，择优取最高分；若掩码面积占比 <20% 或矩形度 <0.6，则自动内容兜底（或整图），并在 run_summary 中记录 attempts/score。
 - 实现现状与裁剪逻辑：绿框来自分割 mask 的外接框，扩边比例由配置 `geom.crop_expand_ratio/crop_expand_extra` 决定；粉框由几何精修拟合四边形，最终生成的 scan_gray/scan_bw 以粉框（或矩形回退）透视结果为准，绿框仅作为初裁范围。当前 dewarp 采用透视回退 + 轻量曲率微调，无 page-dewarp 依赖。
+- 分割前预处理：已移除 rembg 前置模块，默认直接分割；如需额外滤镜，请在策略列表中扩展对应路数。
 
 ## 运行示例（待代码落地后）
 
@@ -64,6 +66,7 @@ python scripts/run_batch.py --input input_dir --output output_dir --mode auto --
 
 调试：
 - `--debug` 时，每个源文件的输出目录会包含调试图：`debug_mask.png`/`debug_bbox.png`（整体分割掩膜与 bbox）、每页的 `page_xxx_raw/dewarp/refine/gray/bw`，便于对照流程与结果。
+- 批量评测：`scripts/run_strategy_batch.py` 支持随机抽样批跑，输出仅保留 `01_mask/02_bbox/03_scan_bw`，并在 `exports/` 汇总、`summary.csv` 记录各图最佳策略与评分。
 
 快速烟囱测试（当前阶段不含 OCR，验证裁剪/几何/增强链路）：
 ```bash

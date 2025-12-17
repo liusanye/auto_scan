@@ -16,12 +16,81 @@ from dataclasses import dataclass
 from docscan import config as cfg
 from docscan import io_utils
 from docscan import mask_utils
-from docscan import preproc
-from docscan.segment import segment_pages
-from docscan.page_split import split_single_and_double_pages
 from docscan.dewarp import dewarp_page, gentle_curve_adjust
-from docscan.geom_refine import refine_geometry_with_opencv
 from docscan.enhance import enhance_scan_style
+from docscan.geom_refine import refine_geometry_with_opencv
+from docscan.page_split import split_single_and_double_pages
+from docscan.mask_utils import score_paper_mask
+from rembg import new_session
+from docscan.segment_strategy import Strategy, run_strategies
+
+_REMBG_SESSIONS: dict[str, Any] = {}
+
+
+def _get_rembg_session(model: str):
+    """按模型缓存 rembg session，避免重复初始化。"""
+    if not model:
+        return None
+    sess = _REMBG_SESSIONS.get(model)
+    if sess is not None:
+        return sess
+    sess = new_session(model)
+    _REMBG_SESSIONS[model] = sess
+    return sess
+
+
+def _json_default(obj):
+    """将 numpy 标量等转为原生类型，便于 JSON 序列化。"""
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    return str(obj)
+
+
+def _mask_quality(mask: np.ndarray, shape: tuple[int, int], qa_cfg: dict) -> tuple[bool, dict]:
+    """评估掩码是否“像一张纸”，返回 (合格?, 详情)。"""
+    h, w = shape[:2]
+    total = float(h * w)
+    coords = cv2.findNonZero(mask)
+    if coords is None:
+        return False, {"reason": ["empty"], "area_ratio": 0.0}
+    x, y, bw, bh = cv2.boundingRect(coords)
+    area = float(cv2.countNonZero(mask))
+    area_ratio = area / total
+    rect_ratio = area / max(1.0, bw * bh)
+    aspect = max(bw, bh) / max(1.0, min(bw, bh))
+    cx, cy = x + bw / 2.0, y + bh / 2.0
+    cx_img, cy_img = w / 2.0, h / 2.0
+    center_dist = np.hypot(cx - cx_img, cy - cy_img) / max(1.0, min(h, w))
+    reasons = []
+    cfg_q = qa_cfg or {}
+    min_area = cfg_q.get("min_area_ratio", 0.15)
+    min_rect = cfg_q.get("min_rect_ratio", 0.5)
+    min_size_ratio = cfg_q.get("min_size_ratio", 0.3)
+    ratio_range = cfg_q.get("ratio_range", [0.6, 1.8])
+    center_max = cfg_q.get("center_dist_max", 0.4)
+    if area_ratio < min_area:
+        reasons.append("area_small")
+    if bw < w * min_size_ratio or bh < h * min_size_ratio:
+        reasons.append("bbox_small")
+    if rect_ratio < min_rect:
+        reasons.append("rect_ratio_low")
+    if not (ratio_range[0] <= aspect <= ratio_range[1]):
+        reasons.append("aspect_out")
+    if center_dist > center_max:
+        reasons.append("center_off")
+    ok = len(reasons) == 0
+    return ok, {
+        "reason": reasons,
+        "area_ratio": area_ratio,
+        "rect_ratio": rect_ratio,
+        "aspect": aspect,
+        "center_dist": center_dist,
+        "bbox": (x, y, bw, bh),
+    }
 
 log = logging.getLogger(__name__)
 
@@ -85,49 +154,6 @@ def _clamp_quad_to_bbox(
         cy = min(max(int(round(y)), by0), by1)
         clamped.append([cx, cy])
     return clamped
-
-
-def _mask_quality(mask: np.ndarray, shape: tuple[int, int], qa_cfg: dict) -> tuple[bool, dict]:
-    """评估掩码是否“像一张纸”，返回 (合格?, 详情)。"""
-    h, w = shape[:2]
-    total = float(h * w)
-    coords = cv2.findNonZero(mask)
-    if coords is None:
-        return False, {"reason": ["empty"], "area_ratio": 0.0}
-    x, y, bw, bh = cv2.boundingRect(coords)
-    area = float(cv2.countNonZero(mask))
-    area_ratio = area / total
-    rect_ratio = area / max(1.0, bw * bh)
-    aspect = max(bw, bh) / max(1.0, min(bw, bh))
-    cx, cy = x + bw / 2.0, y + bh / 2.0
-    cx_img, cy_img = w / 2.0, h / 2.0
-    center_dist = np.hypot(cx - cx_img, cy - cy_img) / max(1.0, min(h, w))
-    reasons = []
-    cfg_q = qa_cfg or {}
-    min_area = cfg_q.get("min_area_ratio", 0.15)
-    min_rect = cfg_q.get("min_rect_ratio", 0.5)
-    min_size_ratio = cfg_q.get("min_size_ratio", 0.3)
-    ratio_range = cfg_q.get("ratio_range", [0.6, 1.8])
-    center_max = cfg_q.get("center_dist_max", 0.4)
-    if area_ratio < min_area:
-        reasons.append("area_small")
-    if bw < w * min_size_ratio or bh < h * min_size_ratio:
-        reasons.append("bbox_small")
-    if rect_ratio < min_rect:
-        reasons.append("rect_ratio_low")
-    if not (ratio_range[0] <= aspect <= ratio_range[1]):
-        reasons.append("aspect_out")
-    if center_dist > center_max:
-        reasons.append("center_off")
-    ok = len(reasons) == 0
-    return ok, {
-        "reason": reasons,
-        "area_ratio": area_ratio,
-        "rect_ratio": rect_ratio,
-        "aspect": aspect,
-        "center_dist": center_dist,
-        "bbox": (x, y, bw, bh),
-    }
 
 
 def _draw_overlay(
@@ -321,88 +347,122 @@ def process_image_file(
 
     t0 = time.time()
     stage_times: Dict[str, float] = {}
-    # 分割前预处理 + 失败重试：仅供 mask/框识别，主图保持不变
-    t_pre = time.time()
-    preproc_info: Dict[str, Any] = {"enabled": conf["preproc"].get("enable", True), "applied": False}
+    # 分割前预处理（可选 rembg）：默认不开启，不改变原流程
+    preproc_info: Dict[str, Any] = {"enabled": False, "applied": False, "reason": "removed"}
     segment_info: Dict[str, Any] = {}
-    retry_conf = conf.get("segment_retry", {}) or {}
-    qa_cfg = (retry_conf.get("quality") or {}).copy()
-    max_trials = int(retry_conf.get("max_trials", 3))
-    retry_enabled = retry_conf.get("enable", True) and max_trials > 1
-    trial_profiles = ["base", "boost", "edge"]
     page_regions = []
     combined_mask = None
-    used_profile = "base"
     quality_detail: Dict[str, Any] | None = None
 
-    for trial_idx in range(max_trials):
-        profile = trial_profiles[min(trial_idx, len(trial_profiles) - 1)]
-        used_profile = profile
-        preproc_cfg = conf["preproc"].copy()
-        preproc_cfg["profile"] = profile
-        t_pre_trial = time.time()
-        if preproc_cfg.get("enable", True):
-            seg_image, preproc_info = preproc.preprocess_for_segmentation(image, preproc_cfg)
-        else:
-            seg_image = image
-            preproc_info = {"enabled": False, "applied": False, "reason": "disabled", "profile": profile}
-        stage_times["preproc"] = stage_times.get("preproc", 0.0) + (time.time() - t_pre_trial)
+    seg_image = image
+    stage_times["preproc"] = 0.0
 
-        t_seg = time.time()
-        page_regions = segment_pages(
-            seg_image,
-            max_side=conf["limits"]["rembg_max_side"],
-            min_area_ratio=conf["segment"]["min_area_ratio"],
-            morph_kernel=conf["segment"]["morph_kernel"],
-            small_merge_ratio=conf["segment"].get("small_merge_ratio", 0.25),
-            max_merge_gap_ratio=conf["segment"].get("max_merge_gap_ratio", 0.12),
-            preview_side=conf["run"].get("segment_preview_side"),
-            clean_cfg=conf["segment"].get("clean"),
+    retry_conf = conf.get("segment_retry", {}) or {}
+    qa_cfg = (retry_conf.get("quality") or {}).copy()
+
+    def need_retry(score: float, detail: dict) -> bool:
+        return (score < 6.0) and (
+            (detail.get("area_ratio", 0.0) < 0.4) or (detail.get("rect_ratio", 1.0) < 0.7)
         )
-        stage_times["segment"] = stage_times.get("segment", 0.0) + (time.time() - t_seg)
 
-        # 主体筛选：保留最像纸张的连通域
-        if page_regions:
-            combined_mask = np.zeros_like(page_regions[0][0])
-            for m, _bbox in page_regions:
-                combined_mask = cv2.bitwise_or(combined_mask, m)
-            main_mask, main_info = mask_utils.select_main_region(combined_mask)
-            filtered_regions = []
-            for m, _bbox in page_regions:
-                intersect = cv2.bitwise_and(m, main_mask)
-                if cv2.countNonZero(intersect) > 0:
-                    filtered_regions.append((intersect, _bbox))
-            if filtered_regions:
-                page_regions = filtered_regions
-            segment_info["main_select"] = main_info
-            ok, quality_detail = _mask_quality(main_mask, image.shape[:2], qa_cfg)
-            segment_info["quality"] = quality_detail
-            if ok or not retry_enabled:
-                break
-            else:
-                log.warning("pipeline: segment 质量不足，尝试重试 trial=%d reasons=%s", trial_idx + 1, quality_detail.get("reason"))
+    # 默认三路策略：u2net -> u2netp+matting -> light+u2netp+matting
+    strategies = [
+        Strategy(name="u2net", model="u2net", alpha_matting=False, max_side=conf["limits"].get("rembg_max_side", 1600)),
+        Strategy(
+            name="u2netp_mat",
+            model="u2netp",
+            alpha_matting=True,
+            max_side=conf["limits"].get("rembg_max_side", 1600),
+        ),
+        Strategy(
+            name="light_u2netp_mat",
+            model="u2netp",
+            alpha_matting=True,
+            max_side=conf["limits"].get("rembg_max_side", 1600),
+            preproc="light",
+        ),
+    ]
+
+    best = run_strategies(
+        seg_image,
+        image.shape[:2],
+        strategies,
+        qa_cfg,
+        need_retry,
+        session_provider=_get_rembg_session,
+    )
+    page_regions = best.get("regions") or []
+    combined_mask = best.get("combined_mask")
+    quality_detail = best.get("detail")
+    attempts = best.get("attempts", [])
+    stage_times["segment"] = sum(a.get("time", 0.0) for a in attempts)
+    segment_fallback = best.get("name") != "u2net"
+    segment_fallback_msg = best.get("name") if segment_fallback else None
+
+    def _apply_content_fallback(reason: str):
+        nonlocal page_regions, combined_mask, segment_fallback, segment_fallback_msg, quality_detail, best
+        mask_fb, bbox_fb, cov_fb = mask_utils.best_content_mask(image)
+        if bbox_fb is not None and cov_fb > 0.05:
+            page_regions = [(mask_fb, bbox_fb)]
+            combined_mask = mask_fb
+            score_fb, detail_fb = score_paper_mask(mask_fb, image.shape[:2], qa_cfg)
+            detail_fb = detail_fb or {}
+            detail_fb.setdefault("reason", []).insert(0, "content_fallback")
+            detail_fb["area_ratio"] = detail_fb.get("area_ratio", cov_fb)
+            detail_fb["rect_ratio"] = detail_fb.get("rect_ratio", 1.0)
+            quality_detail = detail_fb
+            segment_fallback = True
+            segment_fallback_msg = f"content_fallback_{reason}"
+            best = {
+                "score": score_fb,
+                "model": best.get("model"),
+                "alpha_matting": best.get("alpha_matting", False),
+                "preproc": best.get("preproc", "none"),
+                "name": best.get("name"),
+                "detail": quality_detail,
+            }
         else:
-            combined_mask = np.zeros(seg_image.shape[:2], dtype=np.uint8)
-            segment_info["quality"] = {"reason": ["empty"]}
-            if not retry_enabled:
-                break
-    preproc_info["profile_used"] = used_profile
-    stage_times["preproc"] = stage_times.get("preproc", 0.0)
+            # 再不行用整图
+            h2, w2 = image.shape[:2]
+            full_mask = np.ones((h2, w2), dtype=np.uint8) * 255
+            page_regions = [(full_mask, (0, 0, w2, h2))]
+            combined_mask = full_mask
+            score_fb, detail_fb = score_paper_mask(full_mask, image.shape[:2], qa_cfg)
+            detail_fb = detail_fb or {}
+            detail_fb.setdefault("reason", []).insert(0, "full_image_fallback")
+            detail_fb["area_ratio"] = detail_fb.get("area_ratio", 1.0)
+            detail_fb["rect_ratio"] = detail_fb.get("rect_ratio", 1.0)
+            quality_detail = detail_fb
+            segment_fallback = True
+            segment_fallback_msg = f"full_image_{reason}"
+            best = {
+                "score": score_fb,
+                "model": best.get("model"),
+                "alpha_matting": best.get("alpha_matting", False),
+                "preproc": best.get("preproc", "none"),
+                "name": best.get("name"),
+                "detail": quality_detail,
+            }
 
-    segment_fallback = False
-    segment_fallback_msg: str | None = None
+    # 覆盖率/矩形度兜底判定（在 split 之前，确保裁剪使用兜底 mask）
+    area_ratio = quality_detail.get("area_ratio", 0.0) if quality_detail else 0.0
+    rect_ratio = quality_detail.get("rect_ratio", 0.0) if quality_detail else 0.0
+    if area_ratio < 0.20 or rect_ratio < 0.60:
+        _apply_content_fallback("low_area_or_rect")
+
     if not page_regions:
         mask_fb, bbox_fb, cov_fb = mask_utils.best_content_mask(image)
         if bbox_fb is not None and cov_fb > 0.05:
             page_regions = [(mask_fb, bbox_fb)]
+            combined_mask = mask_fb
             log.warning("pipeline: segment 无结果，使用内容兜底 mask 覆盖率=%.3f bbox=%s", cov_fb, bbox_fb)
             segment_fallback = True
             segment_fallback_msg = "content_mask"
         else:
-            # 分割失败兜底：整张图作为单页
             h2, w2 = image.shape[:2]
             full_mask = np.ones((h2, w2), dtype=np.uint8) * 255
             page_regions = [(full_mask, (0, 0, w2, h2))]
+            combined_mask = full_mask
             log.warning("pipeline: segment 无结果，回退使用整张图")
             segment_fallback = True
             segment_fallback_msg = "full_image"
@@ -430,19 +490,40 @@ def process_image_file(
     stage_times["split"] = time.time() - t_split
     log.info("pipeline: segmented pages=%d", len(pages))
 
-    combined_mask = None
     if page_regions:
         combined_mask = np.zeros_like(page_regions[0][0])
         for mask_region, _bbox in page_regions:
             combined_mask = cv2.bitwise_or(combined_mask, mask_region)
     else:
         combined_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
     segment_coverage = float(cv2.countNonZero(combined_mask)) / float(max(1, h * w))
+    attempt_summaries = [
+        {
+            "name": a.get("name"),
+            "model": a["model"],
+            "alpha_matting": a["alpha_matting"],
+            "preproc": a.get("preproc", "none"),
+            "score": a["score"],
+            "area_ratio": a["detail"].get("area_ratio"),
+            "rect_ratio": a["detail"].get("rect_ratio"),
+            "need_retry": a["need_retry"],
+            "time": a["time"],
+        }
+        for a in attempts
+    ]
     segment_info = {
         "regions": len(page_regions),
         "fallback": segment_fallback,
         "fallback_reason": segment_fallback_msg,
         "coverage": segment_coverage,
+        "quality": quality_detail or {"reason": ["empty"]},
+        "score": best.get("score", 0.0),
+        "model": best.get("model"),
+        "alpha_matting": best.get("alpha_matting", False),
+        "preproc": best.get("preproc", "none"),
+        "name": best.get("name"),
+        "attempts": attempt_summaries,
     }
     if debug_enabled:
         _save_debug_image(combined_mask, out_dir / "01_debug_mask.png")
@@ -675,7 +756,7 @@ def process_image_file(
         summary["debug_overlay"] = str(out_dir / "02_debug_bbox.png")
     summary_path = out_dir / "run_summary.json"
     try:
-        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     except Exception:  # noqa: BLE001
         log.exception("写入 run_summary 失败 %s", summary_path)
 
