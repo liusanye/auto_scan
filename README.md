@@ -1,92 +1,116 @@
-# 文档拍照自动整理系统（设计与落地说明）
+# 文档拍照自动整理系统
 
-> 接手前请先阅读根目录 `DEVLOG.md` 的“接手速览”，再按其中说明激活 `.venv` 与 `PYTHONPATH=.` 后运行。
+> 目标：将手机拍摄的文档照片转换为“扫描风格灰度/二值图”，仅使用预训练模型（无训练），在 macOS/Apple Silicon CPU 环境即可运行。  
+> 入口请先阅读根目录 `DEVLOG.md` 的“接手速览”，按其中步骤激活 `.venv` 并设置 `PYTHONPATH=.`。
 
-本项目目标：在 macOS（MacBook Air M3，CPU）上，把手机拍摄的文档照片自动转成“扫描风格图片 + Excel/结构化数据”，仅使用预训练模型，不训练新模型。当前完成了方案设计，代码实现与脚本将在此方案基础上展开。
+## 快速开始
 
-## 环境与依赖
-
+### 环境准备
 - Python 3.10+（推荐 3.11）。
-- 建议开启虚拟环境：
+- 建议使用虚拟环境：
   ```bash
   python3 -m venv .venv
   source .venv/bin/activate
+  export PYTHONPATH=.
   ```
-- 推荐安装（后续可按 requirements.txt）：
+- 安装依赖（Apple Silicon 建议 silicon 轮子）：
   ```bash
-  # Apple Silicon 用 onnxruntime-silicon 提升兼容性
-  pip install onnxruntime-silicon
-  pip install rembg opencv-python-headless scikit-image tqdm pyyaml Pillow 'numpy<2.0' 'onnxruntime-silicon>=1.16,<1.19'
-  # page-dewarp 如安装失败可暂时跳过，流程有回退
-  # 已不再依赖 page-dewarp，采用透视回退+轻量曲率微调
+  pip install -r requirements.txt
+  # 如遇 numpy/onnxruntime 版本冲突，可显式：
+  pip install 'onnxruntime-silicon>=1.16,<1.19' 'numpy<2.0'
   ```
-- 如后续需要启用 OCR，再额外安装 `paddlepaddle` 与 `paddleocr`；当前阶段无需。
-- 环境变量建议：`OMP_NUM_THREADS=1`，避免 onnxruntime 占满核。
+- 环境变量建议：`OMP_NUM_THREADS=1`，避免 onnxruntime 占满所有核。
 
-## 目录结构（规划）
+### 运行命令
+- 单文件/目录：
+  ```bash
+  PYTHONPATH=. .venv/bin/python cli.py --input <文件或目录> --output outputs --mode quality --debug-level bbox
+  # 仅分割/裁剪预览：--dry-run
+  # 关闭调试：--debug-level none
+  # 预热分割模型：--warmup
+  ```
+- 批量（默认线程池，进程池权限受限会自动回退）：
+  ```bash
+  PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox
+  ```
+- 分割策略对比与导出（仅保留 01/02/03 调试图 + summary.csv）：
+  ```bash
+  PYTHONPATH=. .venv/bin/python scripts/run_strategy_batch.py --input source_images --output outputs_strategy --num 20 --mode quality --debug-level bbox
+  ```
+- 烟囱测试（当前不含 OCR）：
+  ```bash
+  PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug
+  ```
 
+## 项目结构
 ```
 docscan/
-  docscan/               # 核心模块（segment/dewarp/geom_refine/enhance/pipeline）
-  scripts/run_batch.py   # 批量处理与并发控制
-  cli.py                 # CLI 入口
-  examples/              # 样例输入
+  cli.py                    # CLI 入口
+  docscan/
+    config.py               # 配置默认值与模式映射
+    segment.py              # rembg 分割 + 清理 + 小块合并
+    segment_strategy.py     # 多路分割策略执行与评分择优
+    page_split.py           # 单/双页判定、裁剪与扩边
+    dewarp.py               # 透视回退 + 轻量曲率微调
+    geom_refine.py          # 几何精修（粉框透视/A4 微调/deskew）
+    enhance.py              # 扫描风格增强（division + CLAHE + Sauvola + 锐化）
+    mask_utils.py           # 内容兜底、纸张评分、边缘削弱
+    io_utils.py             # 读写与 EXIF 方向矫正
+    ocr_paddle.py           # OCR 封装（当前流程未接入）
+    postprocess.py          # OCR 后处理占位
+    pipeline.py             # 主流程串联
+  scripts/
+    run_batch.py            # 批量/并发入口
+    run_strategy_batch.py   # 分割策略回归与导出
+    smoke_test.py           # 烟囱测试（无 OCR）
+    review_bbox.py          # bbox 自动评审
+  examples/README.md        # 样例说明（无真实图片）
   requirements.txt
-  README.md
-  planCodex版.md         # 详细实现与改进方案（主文档）
+  planCodex版.md            # 方案与改进思路
+  DEVLOG.md                 # 接手速览与变更记录
 ```
 
-## 模式与关键策略
+## 流程与技术路线
+- **输入保护**：入口最长边限制（默认 2400），最小边不足时适度放大，避免分割失败。
+- **分割**（`segment_strategy` → `segment`）：按 u2net → u2netp+matting → light+u2netp+matting 顺序尝试，基于 `score_paper_mask` 评分择优；若面积 <20% 或矩形度 <0.6 自动内容兜底（再不行用整图）。
+- **单/双页拆分**（`page_split`）：宽高比 + 水平投影谷值 + 对称度判定双页；单页按 mask 外接框并配置化扩边，贴边弱梯度可削边；分割偏小时可局部/全局内容兜底。
+- **去透视/曲率**（`dewarp` + `gentle_curve_adjust`）：默认透视回退（四边形失败则矩形），可选轻量曲率二次拟合 remap。
+- **几何精修**（`geom_refine`）：粉框拟合 + A4 比例微调 + deskew；覆盖率不足时退矩形或跳过透视。
+- **增强**（`enhance`）：division normalization → CLAHE → Sauvola → 轻量锐化，输出灰度与二值版。
+- **输出与调试**：按前缀 01/02/10/11/12/13/14/20/21 命名；`run_summary.json` 记录模式、耗时、降级、分割尝试细节、输出路径。`debug-level=bbox` 仅输出 01/02/20/21，`full` 额外输出中间件。
+- **OCR**：`ocr_paddle.py` 可选封装，但当前 pipeline 未调用；后续集成需要在 pipeline 增加阶段。
 
-- 模式：`fast`（跳过 dewarp，轻量增强），`quality`（全流程），`auto`（按分辨率/核数自适应）。
-- 分辨率保护：入口最长边建议 2048–2560，超限等比压缩。
-- 回退链：dewarp→透视→原图；segment 失败→全图裁剪+留白。
-- 调试与观测：debug 输出 mask/投影曲线/四边形/deskew 角度/矫正前后对比；run-summary 记录耗时、置信度、降级、输出路径。
-- 预热：CLI 提供 `--warmup` 对分割空跑，避免首帧极慢。
-- 分割策略与兜底：按 `u2net → u2netp+alpha matting → light+u2netp+alpha matting` 顺序尝试，择优取最高分；若掩码面积占比 <20% 或矩形度 <0.6，则自动内容兜底（或整图），并在 run_summary 中记录 attempts/score。
-- 实现现状与裁剪逻辑：绿框来自分割 mask 的外接框，扩边比例由配置 `geom.crop_expand_ratio/crop_expand_extra` 决定；粉框由几何精修拟合四边形，最终生成的 scan_gray/scan_bw 以粉框（或矩形回退）透视结果为准，绿框仅作为初裁范围。当前 dewarp 采用透视回退 + 轻量曲率微调，无 page-dewarp 依赖。
-- 分割前预处理：已移除 rembg 前置模块，默认直接分割；如需额外滤镜，请在策略列表中扩展对应路数。
+## 功能与限制
+- **已实现**：多策略分割兜底、单/双页裁剪、透视回退+曲率微调、粉框精修、扫描风格增强、批处理与调试导出。
+- **未实现/待集成**：OCR 与字段归一化未在主流程启用；前置预处理模块已移除，当前仅使用 rembg 内置预处理。
+- **已知风险**：贴边弱梯度场景可能残留背景；曲率矫正为轻量级；高分辨率大图需确保最长边限制以控时。
 
-## 运行示例（待代码落地后）
+## 输出文件说明（单页示例）
+- `01_debug_mask.png`：分割/兜底整体 mask。
+- `02_debug_bbox.png`：原图叠加绿框（分割外扩 hull）+ 粉框（透视四边形）+ 图例/降级提示。
+- `10_*_raw.png`：绿框裁剪页（debug full）。
+- `11_*_dewarp.png`：去透视/曲率后（debug full）。
+- `12_*_refine.png`：粉框透视结果（debug full）。
+- `13_*_gray.png` / `14_*_bw.png`：调试灰度/二值（与正式输出对齐，debug full）。
+- `20_*_scan_gray.png` / `21_*_scan_bw.png`：正式输出。
+- `run_summary.json`：处理元数据（模式/耗时/降级/分割尝试/输出路径等）。
 
-```bash
-python cli.py --input input_dir_or_file --output output_dir --mode quality --config config.yaml --debug
-# 只看裁剪/框（轻量调试）： --debug-level bbox
-# 关闭调试输出：默认 none
-# 仅分割/裁剪预览（不做去透视和增强）： --dry-run
-```
+## 性能与调试建议（M3 CPU 参考）
+- 模式：`fast` 跳过 dewarp，适合拍得较正；`quality` 全流程；`auto` 按分辨率自适应。
+- 分割预览：`segment_preview_side=2000`（默认）可明显降低耗时。
+- 并发：`run_batch` 推荐线程池，并发≈核数/2；process 若受权限限制会自动回退。
+- 预热：首帧较慢时使用 `--warmup`（分割空跑一次）。
+- 输出体积：`debug-level full` 会生成大量中间图，批量时可改用 `bbox`。
 
-批量：
-```bash
-python scripts/run_batch.py --input input_dir --output output_dir --mode auto --concurrency 2 --debug-level bbox
-# CPU 密集型，建议并发=核数/2；需要完整中间图用 --debug-level full
-# 仅分割/裁剪预览： --dry-run
-# 如进程池受限，可指定线程池： --pool thread （默认已是 thread；process 若遇权限错误会自动回退）
-```
+## 下一步方向
+- 集成 OCR（调用 `ocr_paddle.py`），补充表格/结构化输出与后处理（建议独立分支推进）。
+- 迭代贴边弱梯度场景的 mask 改善（内容补全或边界削弱）。
+- 探索前置预处理自动打分/多路择优（当前已移除，需新方案验证）。
 
-调试：
-- `--debug` 时，每个源文件的输出目录会包含调试图：`debug_mask.png`/`debug_bbox.png`（整体分割掩膜与 bbox）、每页的 `page_xxx_raw/dewarp/refine/gray/bw`，便于对照流程与结果。
-- 批量评测：`scripts/run_strategy_batch.py` 支持随机抽样批跑，输出仅保留 `01_mask/02_bbox/03_scan_bw`，并在 `exports/` 汇总、`summary.csv` 记录各图最佳策略与评分。
-
-快速烟囱测试（当前阶段不含 OCR，验证裁剪/几何/增强链路）：
-```bash
-python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2
-```
-
-## Smoke Test（规划）
-
-- 在 `examples/` 放 3–5 张样例（单页、双页、强光差、旋转 ~10°）。
-- 提供 smoke test 脚本：运行 pipeline 处理样例，检查输出文件存在、日志无 ERROR；验证 dewarp 回退路径。
-
-## 性能预估（M3 CPU 参考）
-
-- fast 模式：单张几秒级（取决于分辨率），内存 <1GB。
-- quality 模式：dewarp 占主要时间；建议保持输入最长边 ≤2560。
-
-## 当前状态与下一步
-
-- 已完成方案整合与落地策略：见 `planCodex版.md`。
-- 当前阶段仅输出扫描风格图，OCR 功能暂不启用，后续作为扩展再开启。
-- 下一步：按方案搭建代码框架、配置文件、CLI/run_batch、smoke test，并锁定已验证依赖版本。
-- 调试与性能建议：`--debug-level` 可选 `none/bbox/full`（默认 none，bbox 仅输出 01/02 轻量调试）；分割阶段默认在 2000px 预览分辨率下运行以减少耗时；批量并发建议核数/2，CPU 密集任务使用进程池。
-- 调参快捷：`--dry-run` 可仅运行分割/裁剪并输出调试框，便于快速核查框选，无需去透视和增强。
+## 维护与协作规则
+- 分支策略：功能/实验统一用 `feature/<name>` 或 `exp/<name>`，高风险/大改动务必独立分支验证后再合入；热修可用 `hotfix/<name>`。
+- 提交与记录：任何影响运行、配置、输出的改动，需同步更新 `DEVLOG.md`（接手速览/变更记录）与本文件的相关段落；提交信息用中文简洁描述“做了什么+为什么”。
+- 测试约定：最少执行一次烟囱测试（`scripts/smoke_test.py`）验证裁剪/几何/增强链路；涉及分割策略调整时跑 `run_strategy_batch.py` 抽样输出 `summary.csv`；批量并发改动需注明耗时与并发设置。
+- 配置与阈值：新增/修改阈值应优先配置化（`config.py`），避免硬编码；默认参数需兼顾质量与性能。
+- 调试输出：日常调试使用 `--debug-level bbox`，全量中间件仅在排查或回归时启用；批量运行请避免 `full` 以控制 I/O。
+- OCR 开发：当前主流程不含 OCR，后续应在独立分支接入并补充输出/日志/配置，再评估合入主干。

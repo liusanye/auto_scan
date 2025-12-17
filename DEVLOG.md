@@ -1,89 +1,54 @@
-# 开发记录 / 记忆总览（重置版）
+# 开发记录 / 记忆总览
 
-> 这是项目的“记忆系统”。任何人接手前必须先读本文件。仅保留铁律和工作要求，其余历史记录已重置，请按要求持续维护。
+> 所有人接手前必须先读本文件与 `README.md`。确保一屏掌握环境、当前能力、风险与下一步。
 
-## 接手速览（需随进度实时更新）
-- 环境：项目根已存在 `.venv`，进入项目后执行 `source .venv/bin/activate`，再 `export PYTHONPATH=.`。如依赖缺失，可用 `.venv/bin/pip install -r requirements.txt`。
-- 运行常用命令：`PYTHONPATH=. .venv/bin/python cli.py --input <文件或目录> --output outputs --mode quality --debug`；烟囱测试（无 OCR）`PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke_perf --mode fast --max-files 2`。
-- 当前能力：只输出扫描风格图，OCR 未启用；质量模式推荐，fast 仅在拍得很正时用；dewarp 透视回退，粉框精修开启。
-- 输出与调试：结果在 `outputs/`（含 `run_summary.json`）；debug 打开会生成 `01/02` 调试图和 `10-21` 中间件。
-- 版本与分支：当前基线提交 `b076464`（稳定版本 1.0），仓库干净；需提交请直接用 git。
-- 更多细节：若本速览不够，请继续阅读下文，并查阅根目录 `README.md` 的环境/运行说明。
+## 接手速览（实时维护）
+- 环境：根目录已有 `.venv`，进入后执行 `source .venv/bin/activate` 且 `export PYTHONPATH=.`。依赖按 `requirements.txt` 安装，Apple Silicon 建议显式安装 `onnxruntime-silicon` 与 `numpy<2.0`。建议 `OMP_NUM_THREADS=1`。
+- 版本与分支：当前分支 `feature/preproc-module`，HEAD `548efb7`，工作区干净。
+- 运行常用命令：  
+  - 单文件/目录：`PYTHONPATH=. .venv/bin/python cli.py --input <path> --output outputs --mode quality --debug-level bbox`  
+  - 批量：`PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox`  
+  - 烟囱测试（无 OCR）：`PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug`
+- 当前能力：仅输出扫描风格灰度/二值图（无 OCR）。分割多策略兜底，单/双页拆分，透视回退+轻量曲率微调，粉框精修，扫描风格增强。`debug-level=bbox` 仅输出关键调试图，`full` 输出全部中间件。
+- 输出位置与命名：每个输入对应 `outputs/<stem>/`，调试前缀 01/02，中间件 10-14，正式输出 20/21，元数据 `run_summary.json`。
+- 已知风险：贴边弱梯度可能残留背景；曲率矫正为轻量级；高分辨率大图需控制最长边；OCR 未接入主流程。
 
-## 维护铁律（必须遵守）
-- “接手速览”必须保持实时更新：任何影响环境/运行/能力/输出的变更，先更新该版块再行动，确保接手者一屏即读。
-- 版本管理：当前仓库 git 可用，达到阶段性进展或有效调试结果后务必提交版本，保持可回退与可追踪。
-- 分支策略：调试新功能/高风险改动一律新建分支（例如 `feature/<name>` 或 `exp/<name>`），验证通过再合并回主干，避免直接在主分支试验。
-- 任何反馈、进展、风险、异常或中断恢复，**先更新本文件，再行动**，确保他人仅凭本文件即可对齐上下文。
-- 记录真实、及时、可复现，禁止含糊或遗漏关键信息。
-- 重要决策、调参、风险变化都要写明时间、影响、下一步。
+## 维护铁律
+- “接手速览”必须实时更新任何影响环境/运行/能力/输出的信息。
+- 阶段性进展或有效调试结果务必用 git 提交；高风险/实验性改动新建分支。
+- 任何反馈、风险、异常或恢复操作，先更新本文件再执行。
+- 语言与注释全部使用中文；如发现描述与代码不符，先改文档再改代码。
+- 质检需要目视（可用多模态），不能只看日志；结论写明检查方法与样本。
+- OCR 开发另起分支，未验证前不得混入主流程；分支合并需补全文档与测试记录。
 
-## 工作要求
-- 语言：全程使用中文，代码注释也用中文。
-- 诚实：发现与预期/描述不符，必须如实汇报，不迎合。
-- TODO 可视：执行任何任务前需在对话中先列出当次 TODO 清单并按进度更新，保持全程可见；无需在 DEVLOG 单独维护另一份 TODO 列表（DEVLOG 仅记录重要变更与进展）。
-- 调试/评审约定：如需人工检查框选，直接查看 `outputs/<编号>/debug_bbox.png` 并在文档中说明结论；若执行评审，需记录样本、发现和建议。
-- 质检方法：凡检查输出质量（框选、矫正、增强等），必须结合多模态/视觉模型能力进行“人工式”目视评审，不仅看数值或日志；结论需写明使用了视觉检查，确保对齐人类观察标准。
+## 当前状态
+- 分割：`segment_strategy` 顺序尝试 u2net → u2netp+matting → light+u2netp+matting；面积<20%或矩形度<0.6 自动内容兜底，评分使用 `mask_utils.score_paper_mask`。
+- 拆分与裁剪：`page_split` 支持单/双页判定（宽高比+投影谷值+对称度），单页裁剪可扩边，贴边弱梯度可削边；分割不足时可局部/全局内容兜底。
+- 去透视与曲率：`dewarp` 透视回退（四边形失败退矩形），`gentle_curve_adjust` 做轻量二次拟合微调。
+- 几何精修：`geom_refine` 粉框透视 + A4 比例微调 + deskew，覆盖率不足时退矩形或跳过透视。
+- 增强：`enhance` 采用 division + CLAHE + Sauvola + 轻量锐化，输出灰度/二值。
+- 预处理：历史前置预处理模块已删除，当前仅使用 rembg 内置预处理；如需新方案需另开分支验证。
+- OCR：`ocr_paddle.py` 在代码中可用，但 pipeline 未调用；后续接入需新增阶段。
 
-## 当前状态（待补充）
-- 当前代码：绿框裁剪基于分割 mask，扩边比例读取配置（基础 + 额外）；副块定向扩边保留；粉框（几何精修）开启，最终 scan_gray/scan_bw 以粉框或矩形回退为准；单页兜底直接使用全局 mask 的 `boundingRect`，兜底不再扩边；dewarp 为透视回退 + 轻量曲率微调（无需 page-dewarp）。
-- 输出位置：全量跑的结果在 `outputs/`（质量模式，调试开启）；当前阶段未启用 OCR，仅生成扫描风格图。
-- 已知风险：dewarp 能力有限；仍需关注边缘漏检/背景残留，持续优化 A4 边缘定位。
-- 环境与运行：项目根已有 `.venv`，核心依赖（rembg/opencv/Pillow/numpy/scikit-image 等）已安装；运行脚本需设置 `PYTHONPATH=.`（例如 `PYTHONPATH=. .venv/bin/python scripts/smoke_test.py ...`），否则会找不到 `docscan` 模块。
-- 模式约定：当前场景（同设备/同时间/同方式拍摄的稳定批次）建议统一使用 `quality` 模式处理，获得一致的透视矫正与增强；如需极致速度且拍得很正，可改用 `fast`，一般无需 `auto`。新增 `--dry-run` 可仅做分割/裁剪预览。
-- 版本控制：仓库当前处于提交 `b076464`（稳定版本 1.0），工作区干净；后续仅使用 git 管理版本。若需开发 OCR，请从此提交新开分支推进。
-- 输出文件说明（单页示例，若 `--debug` 则会生成带 `_raw/dewarp/refine/gray/bw` 的中间件）：
-  - 命名规则按处理顺序加前缀，并带源图+页标识：`<prefix>_<image_stem>_page_XXX_*`。
-  - `01_debug_mask.png`：分割/兜底的整体 mask 可视化（图级）。
-  - `02_debug_bbox.png`：原图叠加绿框（裁剪窗口）+ 粉框（实际透视四边形）+ 图例/降级提示（图级）。
-  - `10_*_raw.png`：绿框裁剪后的子图（无透视、无增强，debug 才有）。
-  - `11_*_dewarp.png`：去透视/去卷曲后的图（debug 才有，fast 模式会跳过）。
-  - `12_*_refine.png`：粉框透视后的精修图（带留白，debug 才有）。
-  - `13_*_gray.png`：refine 图的灰度版（debug 才有）。
-  - `14_*_bw.png`：refine 图的二值版（debug 才有，内容与 scan_bw 相同，便于对比）。
-  - `20_*_scan_gray.png`：正式输出的灰度增强版。
-  - `21_*_scan_bw.png`：正式输出的二值化版。
-  - `run_summary.json`：本次处理元数据（模式、耗时、降级、框坐标、输出路径等）。
-
-## TODO 列表（实时维护）
-- 聚焦单页边缘漏检问题：评估通过内容/边缘信号补全 mask 或四边拟合以锁定 A4 边。
-- 同步/核实其他写死阈值是否需要配置化，并在必要时调整。
-- 运行一轮烟囱测试（scripts/smoke_test.py），确认裁剪/几何/增强输出完整；若后续启用 OCR，再补带 OCR 的基准。
-- 新增性能/调试参数待验证：`--debug-level`（none/bbox/full，默认 none）、`segment_preview_side`（默认 2000，分割预览减耗时）、`--dry-run`（只做分割/裁剪）。
-- run_batch 并发：默认线程池（可选 `--pool process`，若因信号量权限失败会自动回退线程池）；建议并发=核数/2。
-- 随机抽取 source_images 20 张，质量模式 + debug 运行后进行人工（多模态）目视评审，记录框选/矫正问题与建议。
-- 分割前预处理：重写为前置模块，默认开启 preset=p1（去阴影+CLAHE+轻降噪），可选 p0/p2/auto，保持 BGR/uint8 不做归一化/CHW；auto 三路打分择优。当前分割模型仍为 rembg u2net，内部预处理保持不变。
-- rembg 预处理注意：当前属于 “A 情况”（调用 `rembg.remove`，内部 normalize 已包含 RGB 转换、固定 320×320 resize、/max、mean/std、CHW/batch）。若外部开发新预处理模块，应该只做光照均衡/降噪/白平衡/轻度对比提升等输入增强，不要重复 resize→归一化→mean/std→CHW/batch，以免与 rembg 内部预处理叠加；如果以后直接用 onnxruntime 跑 u2net，则需自实现 rembg 同款 normalize。
-- 计划：新建分支开发“预处理模块”（独立开关，启用时关闭现有预处理，只走新模块）；主干保持预处理默认关闭，待分支验证成功再合并，否则废弃分支。
-
-## 变更记录
-- 2025-12-16：mask 主体筛选调整：仅当次大区域满足“标题长条且贴顶、与主体宽度重叠、占高<=40%”时才合并，其他细长小块一律不并入主体，避免把背页/翻折条纹混入裁剪范围。回归样本确认右缘背景问题缓解但仍需后续边缘削减优化。
-- 2025-12-16：分割小块合并规则收紧：仅在面积足够小且与主体距离占长边≤0.12时才合并，否则直接丢弃，防止远端小块拼入主体。回归样本复跑顶部小块仍存在，说明需进一步处理贴边小块/贴边弱梯度削减。
-- 2025-12-16：mask 清理策略迭代：改为“只保留最大连通域，并对顶部窄颈突出做切除”以丢弃翻页小块（segment `_keep_only_main_region` + `_strip_top_protrusion`），并用 connectedComponents 避免轮廓异常。回归样本复跑顶部突出已明显收缩，但仍有少量翻页残留，后续需进一步调节窄颈阈值或结合梯度削边。
-- 2025-12-16：分割前预处理默认关闭（可选弱化参数），避免增强导致翻页并入；翻页问题在弱化/关闭后已消失。重构 segment 清理逻辑，新增 `segment.clean` 配置，统一“保留主连通域 + 上下贴边小块裁剪”，精简重复函数；回归样本输出在 `outputs_sample20_seed42_topcut/`。
+## TODO（按优先级粗排）
+- 贴边弱梯度/背景残留场景：探索内容补全或边界削弱的改进方案，回归高风险样本。
+- 集成 OCR 流程：在 pipeline 中增加 OCR 阶段（灰度/二值择优），补充输出与日志。
+- 前置预处理新方案：设计可开关的多路预处理+评分择优，验证后再合并主干。
+- 运行一轮烟囱测试（scripts/smoke_test.py）并更新结果，作为基准。
+- 配置化检查：确认重要阈值是否仍硬编码，必要时下沉到 config。
+- 大批量评审：抽样 20+ 张质量模式 + bbox 调试，目视 `02_debug_bbox.png`，记录问题与建议。
 
 ## 记录指引
-- 采用时间顺序追加，最新条目放在末尾。
-- 每条记录至少包含：日期、动作/发现、影响、下一步。
-- 若有外部依赖/警告/降级路径，也需在记录中注明。
+- 时间顺序追加，最新放末尾；每条包含日期、动作/发现、影响、下一步。
+- 不另起冗余 TODO 列表，本文件即主记忆。
+- 外部依赖/警告/降级路径必须注明。
 
-## 变更记录
-- 2025-12-12：重置 DEVLOG，保留铁律/工作要求；记录当前状态（绿框扩边配置化、粉框开启、dewarp 为透视回退）；添加待办列表。
-- 2025-12-13：梳理并修复裁剪/几何逻辑：默认开启双页判定，修正 max_expand_ratio 过度夹值；补充 EXIF 方向矫正、轻量 deskew 与 A4 比例微调，dewarp 采用透视回退；pipeline 增加 auto 自适应、阶段耗时记录。compileall 因系统缓存目录权限失败未验证，建议运行 smoke 确认裁剪/增强输出正常。
-- 2025-12-13：修复配置重复键（geom deskew/a4）、激活 right_min_expand_ratio 右侧扩边、内容兜底 bbox 增加安全留白；修正 auto 模式判定使用原始尺寸；io_utils 加入上下文读图；新增无 OCR 的烟囱测试脚本 `scripts/smoke_test.py` 和 `examples/README.md`；README 更新“当前仅输出扫描图，不含 OCR”，并移除 OCR 依赖。***
-- 2025-12-13：输出文件命名加前缀排序并包含源图名+页号（01/02 debug，10-14 中间件，20/21 正式输出），减少歧义；DEVLOG 增补文件说明。质量模式批量跑因超时中断，fast+debug 试跑亦因 120s 限时中断，已确认单张 fast 约 2–3s，批量需分批或去掉 debug；当前 dewarp 默认关闭（fast）或透视回退（quality，无 page-dewarp）。完成 tar 备份 `checkpoint_20251213.tar.gz`（排除 .git/.venv/outputs*），但本地 `.git` 目录不可写（git add/index.lock 报 Operation not permitted），暂无法提交 git 版本。
-- 2025-12-14：确认 `.git` 可用且已在提交 `f3ea31a`，仓库干净；约定后续仅用 git 进行版本控制，停止新增压缩包备份；OCR 功能暂不开发，如需请从 `f3ea31a` 新建分支推进。
-- 2025-12-14：全量跑 source_images（共 95 张），命令 `PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode fast --debug --concurrency 1`，耗时约 4.5 分钟，OCR 关闭。3 张分割无结果回退内容兜底（image_001/003/088），多张几何精修因覆盖率低回退矩形；可用 `outputs/<image>/02_debug_bbox.png` 对照粉框/绿框检查标题/装订覆盖。
-- 2025-12-15：提交“稳定版本 1.0”（commit `b076464`）：兜底裁剪直接使用全局 mask boundingRect，兜底扩边关闭；保留右侧定向扩边逻辑，取消覆盖率大时自动收缩；精修回退仅在覆盖率不足时退矩形。当前已知问题：部分样本仍会带入背景，需后续改进 A4 边缘定位。
-- 2025-12-15：性能/调试增强：新增 `debug_level`（none/bbox/full，默认 none），分割阶段支持预览分辨率 `segment_preview_side=2000` 降耗时；run_batch 改进程池并发，CLI/run_batch 支持 `--dry-run`（仅分割/裁剪预览）；dewarp 回退统一输出 matrix 占位；smoke_test 增加耗时统计；README/说明同步更新。
-- 2025-12-15：批处理验证与并发策略：默认线程池，`--pool thread` 并发 4 跑完 `source_images` 全量约 2 分 40 秒（fast+bbox）；进程池在本机因信号量权限受限，已设置失败自动回退线程池；建议并发=核数/2，debug_level=bbox 以减轻 I/O。
-- 2025-12-17：接入统一内容兜底工具 `mask_utils`，分割兜底与 page_split 复用；run_summary 增补分割统计。新增边缘置信度衰减（贴边梯度弱时衰减 mask）与轻量曲率微调（基于上下边缘二次拟合，小幅 remap），可在配置 dewarp.enable_curve_adjust/curve_max_shift_px 控制。随机 15 张回归（seed=42，outputs_sample15）：分割回退 0，边缘衰减触发 0，曲率微调触发 5（max_shift=6px），精修跳过 2（image_016/019 形状过滤，按约定保持裁剪框），覆盖率均值≈0.999，无错误。已知问题：仍需关注个别样本右缘背景残留，后续提升边界置信度/窄带梯度微调；已彻底放弃 page-dewarp 方案（不再依赖）。 
-- 2025-12-17：已手动保存版本（说明：优化重构 2.0，移除 page-dewarp 依赖，采用透视回退+轻量曲率微调；参考 outputs_sample15 回归结果）。当前仓库 git 状态已确认干净。
-- 2025-12-17：调试可视化改进：绿框改为“分割 mask 外扩 hull”，覆盖率≥95% 时不再显示绿框，避免全屏无信息；图例同步更新。外扩比例调整为约 1%（最小 6px），以兜住轻微卷曲/锯齿。后续粉框仍在此区域内工作，便于快速目测分割范围。
-- 2025-12-17：移除 rembg 前置预处理模块，分割改为内置多策略（u2net → u2netp+matting → light+u2netp+matting），默认直接用策略兜底。
-  2025-12-19：重写前置预处理模块（p0/p1/p2/auto），统一纸张评分 `score_paper_mask` 供 auto 打分与质检共用；默认开启 preset=p1。旧预处理代码删除。
-- 2025-12-18：分割质量判定与自动重试落地：`_mask_quality` 检查面积/矩形度/长宽比/中心偏移/外接框尺寸；重试最多 3 次，按 profile base→boost（更强对比度/gamma/CLAHE/锐化）→edge（边缘增强），仅作用分割副本，原图裁剪/增强不变。全部失败才用内容兜底/整图兜底。`segment_retry` 阈值已配置，质量详情写入 run_summary。
-- 2025-12-18：主体筛选改进：`select_main_region` 仅在次大区域为长条标题（长宽比≥3、面积≤35%）时才合并，避免吞翻页；贴边弱梯度场景增加 `attenuate_mask_edges` 削边（面积下降>40%即回退原 mask）。
-- 2025-12-18：回归运行 14/15 张（image_004 为 png 未跑），多数正常；其中一张覆盖率≈0.45，顶部做弱梯度削边，refine 覆盖≈0.999；016/019 因长宽比不符多轮重试后仍不过质检，按矩形回退并跳过透视；059 覆盖率不足回退矩形。需后续确认低覆盖样本的粉框是否仍超绿框以及 image_004.png 补跑。
-- 2025-12-18：补跑 image_004.png，15 张齐全。接手者请先目视 outputs_sample15 中覆盖率最低样本的 `02_debug_bbox.png`（确认顶部翻页削减、粉框位置）、复核 016/019 回退矩形是否可接受；如有调整需改完后更新本 DEVLOG，避免后续接手者看到过期的“下一步”提示。
-- 2025-12-21：彻底删除 rembg 前置预处理文件与配置；分割阶段改为策略执行器（u2net → u2netp+matting → light+u2netp+matting）择优，若掩码面积<20%或矩形度<0.6 自动内容兜底并重新评分。新增批量脚本 `scripts/run_strategy_batch.py`（仅输出 01_mask/02_bbox/03_scan_bw，汇总 exports + summary.csv）。全量回归 91 张：最佳策略 u2net 88、u2netp_mat 2、light_u2netp_mat 1；低分样本 3 张（image_019/016/003），封面类 001/052 兜底正常。
+## 变更记录（重要节点）
+- 2025-12-12：重置 DEVLOG，明确绿框配置化、粉框开启、dewarp 透视回退；新增 TODO 列表。
+- 2025-12-13：修复裁剪/几何逻辑，开启双页判定，补 EXIF 方向与 deskew，添加 `scripts/smoke_test.py` 与 examples 说明；输出命名加前缀排序，新增 `debug_level` 与 `--dry-run`。
+- 2025-12-14：确认 git 可用（提交 `f3ea31a`）；全量跑 source_images（fast+debug），记录分割回退与精修覆盖率；停止压缩包备份，统一用 git。
+- 2025-12-15：提交“稳定版本 1.0”（`b076464`）：兜底裁剪用全局 mask boundingRect（不扩边），保留右侧定向扩边，精修覆盖率不足回退矩形；批处理并发与调试参数完善。
+- 2025-12-17：接入统一内容兜底工具，增加边缘置信度衰减与轻量曲率微调；调试可视化改为分割 hull 绿框（覆盖率≥95% 隐藏），粉框叠加；彻底放弃 page-dewarp 依赖。
+- 2025-12-17：移除 rembg 前置预处理模块，分割改为多策略执行器（u2net → u2netp+matting → light+u2netp+matting）；若面积/矩形度过低自动内容兜底；新增 `scripts/run_strategy_batch.py` 生成 exports 与 summary.csv。
+- 2025-12-18：分割质量判定与自动重试落地；`select_main_region` 收紧标题长条合并条件；低覆盖样本回退矩形并跳过透视；回归 15 张样本覆盖率正常。
+- 2025-12-21：彻底删除旧预处理文件与配置，策略执行器为唯一分割路径；全量回归 91 张统计策略占比，封面类兜底正常。
