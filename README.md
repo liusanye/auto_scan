@@ -4,6 +4,7 @@
 > 入口请先阅读根目录 `DEVLOG.md` 的“接手速览”，按其中步骤激活 `.venv` 并设置 `PYTHONPATH=.`。
 
 ## 快速开始
+> 当前重构阶段 1-4 已完成：分割策略/重试阈值配置化、pipeline 拆分与调试/summary 封装收敛；阶段5（贴边弱梯度专项回归）暂缓。
 
 ### 环境准备
 - Python 3.10+（推荐 3.11）。
@@ -40,6 +41,10 @@
 - 烟囱测试（当前不含 OCR）：
   ```bash
   PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug
+  ```
+- 分割预设评测（对比不同预处理/模型组合的 mask 评分，仅落盘 mask/JSON/CSV）：
+  ```bash
+  PYTHONPATH=. .venv/bin/python scripts/eval_mask_presets.py --input source_images --output outputs_mask_eval --max-files 10
   ```
 
 ## 项目结构
@@ -79,6 +84,11 @@ docscan/
 - **增强**（`enhance`）：division normalization → CLAHE → Sauvola → 轻量锐化，输出灰度与二值版。
 - **输出与调试**：按前缀 01/02/10/11/12/13/14/20/21 命名；`run_summary.json` 记录模式、耗时、降级、分割尝试细节、输出路径。`debug-level=bbox` 仅输出 01/02/20/21，`full` 额外输出中间件。
 - **OCR**：`ocr_paddle.py` 可选封装，但当前 pipeline 未调用；后续集成需要在 pipeline 增加阶段。
+
+### 模式与自适应
+- `mode=fast`：跳过 dewarp，增强减弱。
+- `mode=quality`：全流程。
+- `mode=auto`：按最长边判定：≤1800 走 fast（关闭 dewarp、轻量增强）；1800–2600 走 quality；>2600 仍走 quality 但保持高分辨率限制。
 
 ## 功能与限制
 - **已实现**：多策略分割兜底、单/双页裁剪、透视回退+曲率微调、粉框精修、扫描风格增强、批处理与调试导出。

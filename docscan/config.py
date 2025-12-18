@@ -95,9 +95,22 @@ DEFAULTS: Dict[str, Any] = {
         "max_pages": None,
         "segment_preview_side": 2000,  # 分割用的预览分辨率上限（长边），减小耗时
     },
+    "segment_strategy": {
+        # 默认三路策略：u2net → u2netp+matting → light+u2netp+matting
+        "strategies": [
+            {"name": "u2net", "model": "u2net", "alpha_matting": False, "preproc": "none"},
+            {"name": "u2netp_mat", "model": "u2netp", "alpha_matting": True, "preproc": "none"},
+            {"name": "light_u2netp_mat", "model": "u2netp", "alpha_matting": True, "preproc": "light"},
+        ],
+    },
     "segment_retry": {
         "enable": True,  # 当分割结果过小/形状不符纸张时自动重试
         "max_trials": 3,  # 总尝试次数（含第一次）
+        "condition": {  # 判定需重试的阈值
+            "score_min": 6.0,
+            "area_ratio_min": 0.4,
+            "rect_ratio_min": 0.7,
+        },
         "quality": {
             "min_area_ratio": 0.15,  # 掩码面积占比阈值
             "min_rect_ratio": 0.5,  # 矩形度下限

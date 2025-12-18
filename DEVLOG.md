@@ -4,7 +4,7 @@
 
 ## 接手速览（实时维护）
 - 环境：根目录已有 `.venv`，进入后执行 `source .venv/bin/activate` 且 `export PYTHONPATH=.`。依赖按 `requirements.txt` 安装，Apple Silicon 建议显式安装 `onnxruntime-silicon` 与 `numpy<2.0`。建议 `OMP_NUM_THREADS=1`。
-- 版本与分支：当前分支 `feature/preproc-module`，HEAD `548efb7`，工作区干净。
+- 版本与分支：当前分支 `feature/preproc-module`，HEAD `71c97b9`（策略执行器稳定版 1.1），工作区干净。
 - 运行常用命令：  
   - 单文件/目录：`PYTHONPATH=. .venv/bin/python cli.py --input <path> --output outputs --mode quality --debug-level bbox`  
   - 批量：`PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox`  
@@ -52,3 +52,14 @@
 - 2025-12-17：移除 rembg 前置预处理模块，分割改为多策略执行器（u2net → u2netp+matting → light+u2netp+matting）；若面积/矩形度过低自动内容兜底；新增 `scripts/run_strategy_batch.py` 生成 exports 与 summary.csv。
 - 2025-12-18：分割质量判定与自动重试落地；`select_main_region` 收紧标题长条合并条件；低覆盖样本回退矩形并跳过透视；回归 15 张样本覆盖率正常。
 - 2025-12-21：彻底删除旧预处理文件与配置，策略执行器为唯一分割路径；全量回归 91 张统计策略占比，封面类兜底正常。
+- 2025-12-17：提交“策略执行器稳定版 1.1”（`71c97b9`），重写 README/DEVLOG，明确维护规则、运行指令、功能现状与未接入 OCR 的说明，便于后续接手。
+- 2025-12-17：重构阶段1（零行为变更）：新增上下文/调试/summary 工具模块（context/debug_utils/summary_utils），pipeline 调试与 summary 写入改用工具函数，保留原有输出与流程不变。
+- 2025-12-17：重构阶段2（进行中，行为不变）：抽离图片准备/模式判定与分割步骤为独立函数（_prepare_image_and_mode/_run_segmentation），便于后续拆分 pipeline；未更改算法与阈值，输出保持一致。
+- 2025-12-17：重构阶段2 追加：拆分运行配置构建与 split 调用（_build_runtime_config/_split_pages_with_stats），恢复 PageContext/_save_debug_image 定义，烟囱测试 1 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-17：重构阶段2 进一步：抽出单页处理函数 `_process_single_page_entry`，移除残留 PageContext 依赖，主循环调用该函数（逻辑/阈值不变）；烟囱测试 1 张（fast+debug）通过，run_strategy_batch 抽样 3 张（quality+bbox）通过，输出目录 outputs_smoke_tmp / outputs_strategy_tmp。
+- 2025-12-17：当前工作区未提交变更：新增 context/debug_utils/summary_utils，pipeline 拆分部分完成，README/DEVLOG 已更新；.DS_Store 有外部变动。后续阶段3 待做：分割策略接口标准化/阈值配置化（保持行为不变），完成后需再次回归。
+- 2025-12-18：重构续作：`pipeline.py` 接入 `PipelineContext/PageResult`，分割统计收敛到 `_aggregate_segment`，warmup 改为 `_run_segmentation`；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：阶段3（进行中）：分割策略与重试阈值配置化（config.segment_strategy/segment_retry.condition），pipeline 使用配置构建策略并套用阈值；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：阶段3回归：`scripts/run_strategy_batch.py --num 3 --mode quality --debug-level bbox` 在 source_images 抽样通过，summary 输出于 outputs_strategy_tmp/summary.csv。
+- 2025-12-18：阶段4（封装收敛）：overlay 生成/保存收敛到 debug_utils（prepare_overlay/save_overlay），summary 构建收敛到 summary_utils.build_summary，pipeline 统一使用 PipelineContext 承载耗时与输出路径；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：里程碑：重构阶段1-4 完成并通过烟囱 + 策略抽样回归，阶段5（贴边弱梯度专项）暂缓。
