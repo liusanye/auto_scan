@@ -24,20 +24,47 @@ def _unsharp_mask(gray: np.ndarray, amount: float = 0.6, ksize: int = 5) -> np.n
     return np.clip(sharp, 0, 255).astype("uint8")
 
 
+def _threshold_wolf(image: np.ndarray, window_size: int, k: float = 0.2, R: float = 128.0) -> np.ndarray:
+    """Wolf-Jolion 阈值，参考 nlbin 思路。"""
+    if window_size % 2 == 0:
+        window_size += 1
+    img_f = image.astype("float32")
+    mean = cv2.boxFilter(img_f, ddepth=-1, ksize=(window_size, window_size), normalize=True)
+    mean_sq = cv2.boxFilter(img_f * img_f, ddepth=-1, ksize=(window_size, window_size), normalize=True)
+    std = cv2.sqrt(cv2.max(mean_sq - mean * mean, 0))
+    min_img = cv2.erode(img_f, np.ones((window_size, window_size), dtype=np.uint8))
+    R_eff = max(R, float(np.max(std)) + 1e-6)
+    thresh = mean + k * ((std / R_eff) - 1.0) * (mean - min_img)
+    return thresh
+
+
 def enhance_scan_style(page_image: np.ndarray, enhance_cfg: Dict[str, float] | None = None) -> Tuple[np.ndarray, np.ndarray]:
     """
-    division normalization + CLAHE + Sauvola + 轻量锐化，输出灰度与二值图。
+    division normalization + CLAHE + 自适应阈值 + 轻量锐化，输出灰度与二值图。
     参数从配置读取，不同模式可调整强度。
     """
     cfg = enhance_cfg or {}
     profile = cfg.get("profile", "quality")
+    profile_overrides = (cfg.get("profiles") or {}).get(profile, {})
+
+    bw_method = (profile_overrides.get("bw_method") or cfg.get("bw_method") or "sauvola").lower()
     blur_ksize = int(cfg.get("division_blur", 31))
     clahe_clip = float(cfg.get("clahe_clip", 2.0))
     clahe_grid = int(cfg.get("clahe_grid", 8))
-    sauvola_window = int(cfg.get("sauvola_window", 31))
-    sauvola_k = float(cfg.get("sauvola_k", 0.2))
-    unsharp_amount = float(cfg.get("unsharp_amount", 0.6))
+    sauvola_window = int(profile_overrides.get("sauvola_window", cfg.get("sauvola_window", 31)))
+    sauvola_k = float(profile_overrides.get("sauvola_k", cfg.get("sauvola_k", 0.2)))
+    wolf_k = float(cfg.get("wolf_k", 0.2))
+    bw_pre_smooth_ksize = int(profile_overrides.get("bw_pre_smooth_ksize", cfg.get("bw_pre_smooth_ksize", 0)) or 0)
+    unsharp_amount = float(profile_overrides.get("unsharp_amount", cfg.get("unsharp_amount", 0.6)))
     unsharp_ksize = int(cfg.get("unsharp_ksize", 5))
+    denoise_cfg = cfg.get("denoise", {}) or {}
+    denoise_enable = denoise_cfg.get("enable", False)
+    bilateral_d = int(denoise_cfg.get("bilateral_d", 0) or 0)
+    bilateral_sigma_color = float(denoise_cfg.get("bilateral_sigma_color", 0) or 0)
+    bilateral_sigma_space = float(denoise_cfg.get("bilateral_sigma_space", 0) or 0)
+    post_morph_open = denoise_cfg.get("post_morph_open", False)
+    post_morph_ksize = int(denoise_cfg.get("post_morph_ksize", 3) or 3)
+    post_min_area = int(denoise_cfg.get("post_min_area", 0) or 0)
 
     if profile == "fast":
         blur_ksize = max(15, blur_ksize // 2)
@@ -59,7 +86,44 @@ def enhance_scan_style(page_image: np.ndarray, enhance_cfg: Dict[str, float] | N
     norm = _division_normalization(gray, blur_ksize=blur_ksize)
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
     norm = clahe.apply(norm)
-    thresh = filters.threshold_sauvola(norm, window_size=sauvola_window, k=sauvola_k)
-    bw = (norm > thresh).astype("uint8") * 255
+    norm_for_bw = norm
+    if bw_pre_smooth_ksize and bw_pre_smooth_ksize > 1:
+        if bw_pre_smooth_ksize % 2 == 0:
+            bw_pre_smooth_ksize += 1
+        norm_for_bw = cv2.medianBlur(norm, bw_pre_smooth_ksize)
+    norm_for_bw = norm
+    if denoise_enable and bilateral_d and bilateral_sigma_color and bilateral_sigma_space:
+        try:
+            norm_for_bw = cv2.bilateralFilter(
+                norm_for_bw, d=bilateral_d, sigmaColor=bilateral_sigma_color, sigmaSpace=bilateral_sigma_space
+            )
+        except Exception:
+            pass
+    if bw_pre_smooth_ksize and bw_pre_smooth_ksize > 1:
+        if bw_pre_smooth_ksize % 2 == 0:
+            bw_pre_smooth_ksize += 1
+        norm_for_bw = cv2.medianBlur(norm, bw_pre_smooth_ksize)
+    if bw_method == "wolf":
+        thresh = _threshold_wolf(norm_for_bw, window_size=sauvola_window, k=wolf_k)
+    else:
+        thresh = filters.threshold_sauvola(norm_for_bw, window_size=sauvola_window, k=sauvola_k)
+    bw = (norm_for_bw > thresh).astype("uint8") * 255
+    if denoise_enable:
+        if post_morph_open and post_morph_ksize > 1:
+            if post_morph_ksize % 2 == 0:
+                post_morph_ksize += 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (post_morph_ksize, post_morph_ksize))
+            bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
+        if post_min_area and post_min_area > 0:
+            try:
+                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
+                cleaned = np.zeros_like(bw)
+                for i in range(1, num_labels):
+                    area = stats[i, cv2.CC_STAT_AREA]
+                    if area >= post_min_area:
+                        cleaned[labels == i] = 255
+                bw = cleaned
+            except Exception:
+                pass
     sharp = _unsharp_mask(norm, amount=unsharp_amount, ksize=unsharp_ksize)
     return sharp, bw

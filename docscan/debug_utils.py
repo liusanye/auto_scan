@@ -164,7 +164,8 @@ def prepare_overlay(image: np.ndarray, combined_mask: np.ndarray | None) -> np.n
     if combined_mask is not None:
         hull = cv2.convexHull(cv2.findNonZero(combined_mask)) if cv2.countNonZero(combined_mask) > 0 else None
         if hull is not None:
-            cv2.polylines(overlay, [hull], isClosed=True, color=(0, 200, 0), thickness=5)
+            # 使用蓝色描边 mask 凸包，避免与裁剪框绿色混淆
+            cv2.polylines(overlay, [hull], isClosed=True, color=(70, 130, 180), thickness=5)
     return overlay
 
 

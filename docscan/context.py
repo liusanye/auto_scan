@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, List, Tuple
 
 
 @dataclass
@@ -46,3 +46,4 @@ class PageResult:
     elapsed: float = 0.0
     stage_times: Dict[str, float] = field(default_factory=dict)
     dry_run: bool = False
+    extras: Dict[str, Any] | None = None

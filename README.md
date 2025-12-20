@@ -5,6 +5,7 @@
 
 ## 快速开始
 > 当前重构阶段 1-4 已完成：分割策略/重试阈值配置化、pipeline 拆分与调试/summary 封装收敛；阶段5（贴边弱梯度专项回归）暂缓。
+> 最新补充：enhance 支持可选 Wolf-Jolion 阈值（`enhance.bw_method=wolf`）；输出配置新增 JPEG/预览开关（`output.save_jpeg`/`output.preview_max_side`，默认关闭保持 PNG 高保真）。
 
 ### 环境准备
 - Python 3.10+（推荐 3.11）。
@@ -111,6 +112,7 @@ docscan/
 - 并发：`run_batch` 推荐线程池，并发≈核数/2；process 若受权限限制会自动回退。
 - 预热：首帧较慢时使用 `--warmup`（分割空跑一次）。
 - 输出体积：`debug-level full` 会生成大量中间图，批量时可改用 `bbox`。
+- 输出压缩（可选）：`config.output` 支持开启 JPEG 输出（`save_jpeg`/`jpeg_quality`）与预览图（`preview_max_side`），默认关闭；需要最小化体积时再启用。
 
 ## 下一步方向
 - 集成 OCR（调用 `ocr_paddle.py`），补充表格/结构化输出与后处理（建议独立分支推进）。

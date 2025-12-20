@@ -61,5 +61,9 @@
 - 2025-12-18：重构续作：`pipeline.py` 接入 `PipelineContext/PageResult`，分割统计收敛到 `_aggregate_segment`，warmup 改为 `_run_segmentation`；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：阶段3（进行中）：分割策略与重试阈值配置化（config.segment_strategy/segment_retry.condition），pipeline 使用配置构建策略并套用阈值；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：阶段3回归：`scripts/run_strategy_batch.py --num 3 --mode quality --debug-level bbox` 在 source_images 抽样通过，summary 输出于 outputs_strategy_tmp/summary.csv。
-- 2025-12-18：阶段4（封装收敛）：overlay 生成/保存收敛到 debug_utils（prepare_overlay/save_overlay），summary 构建收敛到 summary_utils.build_summary，pipeline 统一使用 PipelineContext 承载耗时与输出路径；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：阶段4（封装收敛）：overlay 生成/保存收敛到 debug_utils（prepare_overlay/save_overlay），summary 构建收敛到 summary_utils.build_summary，新增 runtime_utils/segment_report 拆分配置与分割报告；pipeline 侧行为不变。烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：里程碑：重构阶段1-4 完成并通过烟囱 + 策略抽样回归，阶段5（贴边弱梯度专项）暂缓。
+- 2025-12-18：增强与输出扩展：enhance 支持可选 Wolf-Jolion 阈值（bw_method=wolf）、输出配置新增 jpeg/preview 选项（默认关闭保持行为不变）；新增 postproc/output_utils 模块配合 pipeline 调度。烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：撤回 Wolf 试验，恢复默认 Sauvola 参数（关闭二值前平滑），保持 PNG+JPEG+预览输出开关。策略抽样 5 张（quality+bbox）通过，输出目录 outputs_strategy_tmp。
+- 2025-12-18：新增方向判定模块 orientation（0/90/180/270 简易打分），单页处理时可根据裁剪页判断方向并旋转；分割凸包描边改为蓝色调试线。当前默认开启，低于阈值不旋转；抽样 20 张（quality+bbox）输出目录 outputs_strategy_full。
+- 2025-12-19：修复 053 空白/框偏移问题：默认关闭拆分页（split.enable_split=False，跳过时回退整页 bbox），拆分封装为 split_module；方向矫正只作用于输出副本并保留原始 bw（21_*_scan_bw_raw）。验证 image_053 正常，框对齐。

@@ -17,10 +17,12 @@ from docscan import io_utils
 from docscan import mask_utils
 from docscan import summary_utils
 from docscan.context import PageResult, PipelineContext
+from docscan import runtime_utils
+from docscan import segment_report
+from docscan import split_module
 from docscan.dewarp import dewarp_page, gentle_curve_adjust
 from docscan.enhance import enhance_scan_style
 from docscan.geom_refine import refine_geometry_with_opencv
-from docscan.page_split import split_single_and_double_pages
 from docscan.mask_utils import score_paper_mask
 from rembg import new_session
 from docscan.segment_strategy import Strategy, run_strategies
@@ -92,76 +94,6 @@ def _get_retry_condition(conf: dict):
 
     return need_retry
 
-
-def _prepare_image_and_mode(image_path: str, conf: dict) -> tuple:
-    """
-    读取图片并按配置约束尺寸，返回 (image, h_raw, w_raw, h, w, effective_mode)。
-    保持原有尺度与 auto 模式逻辑不变。
-    """
-    image = io_utils.load_image(image_path)
-    h_raw, w_raw = image.shape[:2]
-    h, w = h_raw, w_raw
-    max_side = conf["limits"]["max_side"]
-    min_side = conf["limits"]["min_side"]
-    scale_down = min(1.0, max_side / max(h, w))
-    if scale_down < 1.0:
-        image = cv2.resize(image, (int(w * scale_down), int(h * scale_down)), interpolation=cv2.INTER_AREA)
-        h, w = image.shape[:2]
-    min_dim = min(h, w)
-    if min_dim < min_side:
-        scale_up = min_side / float(min_dim)
-        cap = max_side / float(max(h, w))
-        scale_up = min(scale_up, cap)
-        if scale_up > 1.0:
-            image = cv2.resize(image, (int(w * scale_up), int(h * scale_up)), interpolation=cv2.INTER_AREA)
-            h, w = image.shape[:2]
-
-    effective_mode = conf["mode"]
-    if conf.get("mode") == "auto":
-        longest_for_mode = max(max(h_raw, w_raw), max(h, w))
-        if longest_for_mode <= 1800:
-            conf["dewarp"]["enabled"] = False
-            conf["enhance"]["profile"] = "fast"
-            effective_mode = "auto-fast"
-        elif longest_for_mode <= 2600:
-            conf["dewarp"]["enabled"] = True
-            conf["enhance"]["profile"] = "quality"
-            effective_mode = "auto-quality"
-        else:
-            conf["dewarp"]["enabled"] = True
-            conf["enhance"]["profile"] = "quality"
-            effective_mode = "auto-quality-highres"
-    return image, h_raw, w_raw, h, w, effective_mode
-
-
-def _build_runtime_config(
-    mode: str,
-    profile: str | None,
-    config_path: str | None,
-    debug: bool,
-    debug_level: str | None,
-    dry_run: bool,
-    max_pages: int | None,
-) -> tuple[dict, str, bool]:
-    """
-    加载配置并应用 debug/dry_run/max_pages 开关，返回 (conf, debug_level, debug_enabled)。
-    行为保持与原逻辑一致。
-    """
-    conf = cfg.load_config(config_path, mode=mode, profile=profile)
-    if debug_level:
-        conf["run"]["debug_level"] = debug_level
-        conf["run"]["debug"] = debug_level != "none"
-    elif debug:
-        conf["run"]["debug"] = True
-        conf["run"]["debug_level"] = conf["run"].get("debug_level") or "full"
-    else:
-        conf["run"]["debug"] = conf["run"].get("debug", False)
-        conf["run"]["debug_level"] = conf["run"].get("debug_level", "none")
-    conf["run"]["max_pages"] = max_pages
-    conf["run"]["dry_run"] = dry_run
-    debug_level_eff = (conf["run"].get("debug_level") or "none").lower()
-    debug_enabled = debug_level_eff != "none"
-    return conf, debug_level_eff, debug_enabled
 
 
 def _run_segmentation(image: np.ndarray, conf: dict, qa_cfg: dict, need_retry=None) -> tuple:
@@ -257,28 +189,9 @@ def _run_segmentation(image: np.ndarray, conf: dict, qa_cfg: dict, need_retry=No
 
 
 def _split_pages_with_stats(image: np.ndarray, page_regions, conf: dict, stage_times: dict) -> list:
-    """拆分页面并记录耗时，保持原参数与行为。"""
+    """拆分页面并记录耗时，可按开关跳过拆分页。"""
     t_split = time.time()
-    pages = split_single_and_double_pages(
-        image,
-        page_regions,
-        enable_double=conf["split"].get("enable_double", False),
-        double_ratio_threshold=conf["split"]["double_ratio_threshold"],
-        valley_prominence=conf["split"].get("valley_prominence", 0.08),
-        symmetry_tolerance=conf["split"].get("symmetry_tolerance", 0.25),
-        cut_range=tuple(conf["split"].get("cut_range", (0.4, 0.6))),
-        expand_ratio=conf["geom"].get("crop_expand_ratio", 0.05),
-        expand_extra=(
-            conf["geom"].get("crop_expand_extra", {}).get("top", 0.12),
-            conf["geom"].get("crop_expand_extra", {}).get("bottom", 0.02),
-            conf["geom"].get("crop_expand_extra", {}).get("lr", 0.05),
-        ),
-        single_min_height_ratio=conf["split"].get("single_min_height_ratio", 0.9),
-        force_top_padding_ratio=conf["split"].get("force_top_padding_ratio", 0.02),
-        right_min_expand_ratio=conf["split"].get("right_min_expand_ratio", 0.10),
-        force_whole_page=conf["split"].get("force_whole_page", False),
-        max_expand_ratio=conf["geom"].get("max_expand_ratio"),
-    )
+    pages = split_module.split_pages(image, page_regions, conf, stage_times)
     stage_times["split"] = time.time() - t_split
     log.info("pipeline: segmented pages=%d", len(pages))
     return pages
@@ -306,26 +219,7 @@ def _process_single_page_entry(
     bbox = page.get("bbox")
     split_info = page.get("info")
     overlay = overlay_base.copy() if overlay_base is not None else None
-
-    edge_info = None
-    if page.get("mask") is not None:
-        new_mask, edge_info = mask_utils.attenuate_mask_edges(page["image"], page["mask"])
-        page["mask"] = new_mask
-
-    overlay_bbox: tuple[int, int, int, int] | None = None
-    overlay_mask_cov: float | None = None
-    if overlay is not None and page.get("mask") is not None:
-        mask_bin = page["mask"]
-        overlay_mask_cov = float(cv2.countNonZero(mask_bin)) / float(max(1, mask_bin.size))
-        if overlay_mask_cov < 0.95:
-            local_bbox = _mask_bbox_with_margin(mask_bin)
-            if local_bbox is not None:
-                bx0, by0, _, _ = page["bbox"]
-                lx0, ly0, lx1, ly1 = local_bbox
-                overlay_bbox = (bx0 + lx0, by0 + ly0, bx0 + lx1, by0 + ly1)
-    if overlay is not None and overlay_bbox is None:
-        if overlay_mask_cov is None or overlay_mask_cov < 0.95:
-            overlay_bbox = bbox
+    overlay_bbox = None
 
     t_page = time.time()
     try:
@@ -338,7 +232,7 @@ def _process_single_page_entry(
                     bbox=bbox,
                     segment_fallback=segment_fallback,
                     segment_fallback_reason=segment_fallback_msg,
-                    edge_mask=edge_info,
+                    edge_mask=None,
                     dewarp={"method": "dry_run_skip"},
                     refine={"method": "dry_run_skip"},
                     dry_run=True,
@@ -348,103 +242,25 @@ def _process_single_page_entry(
                 overlay_bbox,
             )
 
-        stage_local: Dict[str, float] = {}
-        if debug_level == "full":
-            _save_debug_image(page["image"], out_dir / f"10_{file_prefix}_raw.png")
+        from docscan import postproc
+        from docscan import output_utils
 
-        dewarp_enabled = conf["dewarp"].get("enabled", True) and not conf["split"].get("force_whole_page", False)
-        refine_enabled = conf["geom"].get("enable_refine", True)
-        t_dewarp = time.time()
-        if dewarp_enabled:
-            dewarped, dewarped_mask, dewarp_info = dewarp_page(
-                page["image"],
-                page_mask=page.get("mask"),
-                use_polyline=conf["dewarp"]["enable_polyline"],
-            )
-        else:
-            dewarped = page["image"]
-            dewarped_mask = page.get("mask")
-            dewarp_info = {"method": "skip_disabled"}
-        stage_local["dewarp"] = time.time() - t_dewarp
-
-        curve_info = None
-        t_curve = time.time()
-        if conf["dewarp"].get("enable_curve_adjust", True) and dewarped_mask is not None:
-            dewarped, dewarped_mask, curve_info = gentle_curve_adjust(
-                dewarped,
-                dewarped_mask,
-                max_shift_px=int(conf["dewarp"].get("curve_max_shift_px", 6)),
-            )
-        stage_local["curve_adjust"] = time.time() - t_curve
-        t_refine = time.time()
-        if refine_enabled:
-            page_refined, refine_info = refine_geometry_with_opencv(
-                dewarped,
-                page_mask=dewarped_mask,
-                border_px=conf["geom"]["border_px"],
-                shape_filter=conf["geom"].get("shape_filter"),
-                deskew_max_angle=conf["geom"].get("deskew_max_angle", 5.0),
-                a4_ratio=conf["geom"].get("a4_ratio", 1.414),
-                a4_tolerance=conf["geom"].get("a4_tolerance", 0.10),
-            )
-        else:
-            page_refined = dewarped
-            refine_info = {"method": "refine_skip", "reason": "disabled", "quad": None}
-        stage_local["refine"] = time.time() - t_refine
-        t_enh = time.time()
-
-        gray, bw = enhance_scan_style(page_refined, enhance_cfg=conf.get("enhance"))
-        gray_path = out_dir / f"20_{file_prefix}_scan_gray.png"
-        bw_path = out_dir / f"21_{file_prefix}_scan_bw.png"
-        io_utils.save_image(gray, gray_path)
-        io_utils.save_image(bw, bw_path)
-        stage_local["enhance"] = time.time() - t_enh
-
-        if debug_level == "full":
-            _save_debug_image(dewarped, out_dir / f"11_{file_prefix}_dewarp.png")
-            _save_debug_image(page_refined, out_dir / f"12_{file_prefix}_refine.png")
-            _save_debug_image(gray, out_dir / f"13_{file_prefix}_gray.png")
-            _save_debug_image(bw, out_dir / f"14_{file_prefix}_bw.png")
-
-        refine_quad_local = refine_info.get("quad") if refine_enabled else None
-        refine_quad_global = None
-        refine_quad_backprojected = False
-        if refine_quad_local and isinstance(refine_quad_local, list):
-            bx0, by0, _, _ = page["bbox"]
-            quad_local_np = np.array(refine_quad_local, dtype=np.float32)
-            dewarp_matrix = dewarp_info.get("matrix")
-            if dewarp_matrix is not None:
-                try:
-                    M = np.array(dewarp_matrix, dtype=np.float32)
-                    M_inv = np.linalg.inv(M)
-                    quad_orig = cv2.perspectiveTransform(quad_local_np.reshape(1, -1, 2), M_inv)[0]
-                    refine_quad_global = [[int(pt[0] + bx0), int(pt[1] + by0)] for pt in quad_orig]
-                    refine_quad_backprojected = True
-                except Exception:  # noqa: BLE001
-                    log.exception("refine quad 反投影失败，退回 dewarp quad 显示")
-            if not refine_quad_backprojected:
-                quad_src = dewarp_info.get("quad") or refine_quad_local
-                quad_src_np = np.array(quad_src, dtype=np.float32)
-                refine_quad_global = [[int(pt[0] + bx0), int(pt[1] + by0)] for pt in quad_src_np]
-
-        page_result = PageResult(
+        outputs = postproc.process_page_image(page, conf, debug_level)
+        page_result = output_utils.save_page_outputs(
+            outputs=outputs,
+            out_dir=out_dir,
+            file_prefix=file_prefix,
+            debug_level=debug_level,
+            bbox=bbox,
+            split_info=split_info,
+            segment_fallback=segment_fallback,
+            segment_fallback_msg=segment_fallback_msg,
             page_index=idx,
             page_id=page_id,
-            split_info=split_info,
-            bbox=bbox,
-            segment_fallback=segment_fallback,
-            segment_fallback_reason=segment_fallback_msg,
-            edge_mask=edge_info,
-            enhanced_gray_path=str(gray_path),
-            enhanced_bw_path=str(bw_path),
-            dewarp=dewarp_info,
-            curve_adjust=curve_info,
-            refine=refine_info,
-            refine_quad_global=_clamp_quad_to_bbox(refine_quad_global, overlay_bbox or bbox),
-            refine_quad_backprojected=refine_quad_backprojected,
-            elapsed=time.time() - t_page,
-            stage_times=stage_local,
+            dry_run=dry_run,
+            output_cfg=conf.get("output"),
         )
+        overlay_bbox = outputs.overlay_bbox
         return page_result, overlay_bbox
     except Exception as e:  # noqa: BLE001
         log.exception("处理页面失败 %s", file_prefix)
@@ -455,15 +271,15 @@ def _process_single_page_entry(
             bbox=bbox,
             segment_fallback=segment_fallback,
             segment_fallback_reason=segment_fallback_msg,
-            edge_mask=edge_info,
-            dewarp=dewarp_info if "dewarp_info" in locals() else None,
-            curve_adjust=curve_info if "curve_info" in locals() else None,
-            refine=refine_info if "refine_info" in locals() else None,
-            refine_quad_global=_clamp_quad_to_bbox(locals().get("refine_quad_global"), overlay_bbox or bbox),
-            refine_quad_backprojected=locals().get("refine_quad_backprojected", False),
+            edge_mask=None,
+            dewarp=None,
+            curve_adjust=None,
+            refine=None,
+            refine_quad_global=None,
+            refine_quad_backprojected=False,
             error=str(e),
             elapsed=time.time() - t_page,
-            stage_times=stage_local if "stage_local" in locals() else {},
+            stage_times={},
         )
         return page_result, overlay_bbox
 
@@ -577,7 +393,7 @@ def process_image_file(
     读图 → segment → split → dewarp → geom_refine → enhance。
     """
 
-    conf, debug_level, debug_enabled = _build_runtime_config(
+    conf, debug_level, debug_enabled = runtime_utils.build_runtime_config(
         mode=mode,
         profile=profile,
         config_path=config_path,
@@ -587,7 +403,7 @@ def process_image_file(
         max_pages=max_pages,
     )
 
-    image, h_raw, w_raw, h, w, effective_mode = _prepare_image_and_mode(image_path, conf)
+    image, h_raw, w_raw, h, w, effective_mode = runtime_utils.prepare_image_and_mode(image_path, conf)
 
     stage_times: Dict[str, float] = {}
     ctx = PipelineContext(
@@ -637,19 +453,18 @@ def process_image_file(
     ctx.stage_times["segment"] = seg_time
     pages = _split_pages_with_stats(image, page_regions, conf, ctx.stage_times)
 
-    segment_info, overlay, combined_mask = _aggregate_segment(
-        image,
-        page_regions,
-        combined_mask,
-        quality_detail,
-        attempts,
-        h,
-        w,
-        segment_fallback,
-        segment_fallback_msg,
-        best,
-        debug_enabled,
-        out_dir,
+    segment_info, overlay, combined_mask = segment_report.build_segment_report(
+        image=image,
+        page_regions=page_regions,
+        quality_detail=quality_detail,
+        attempts=attempts,
+        h=h,
+        w=w,
+        segment_fallback=segment_fallback,
+        segment_fallback_msg=segment_fallback_msg,
+        best=best,
+        debug_enabled=debug_enabled,
+        out_dir=out_dir,
     )
 
     for idx, page in enumerate(pages):
@@ -701,60 +516,3 @@ def process_image_file(
         log.exception("写入 run_summary 失败 %s", summary_path)
 
     return results
-
-
-def _aggregate_segment(
-    image: np.ndarray,
-    page_regions,
-    combined_mask,
-    quality_detail,
-    attempts,
-    h: int,
-    w: int,
-    segment_fallback: bool,
-    segment_fallback_msg: str | None,
-    best: dict,
-    debug_enabled: bool,
-    out_dir: Path,
-    ) -> tuple[dict, np.ndarray | None, np.ndarray]:
-    """整理分割信息与调试 overlay，保持原字段与行为。"""
-    if page_regions:
-        combined_mask = np.zeros_like(page_regions[0][0])
-        for mask_region, _bbox in page_regions:
-            combined_mask = cv2.bitwise_or(combined_mask, mask_region)
-    else:
-        combined_mask = np.zeros(image.shape[:2], dtype=np.uint8)
-
-    segment_coverage = float(cv2.countNonZero(combined_mask)) / float(max(1, h * w))
-    attempt_summaries = [
-        {
-            "name": a.get("name"),
-            "model": a["model"],
-            "alpha_matting": a["alpha_matting"],
-            "preproc": a.get("preproc", "none"),
-            "score": a["score"],
-            "area_ratio": a["detail"].get("area_ratio"),
-            "rect_ratio": a["detail"].get("rect_ratio"),
-            "need_retry": a["need_retry"],
-            "time": a["time"],
-        }
-        for a in attempts
-    ]
-    segment_info = {
-        "regions": len(page_regions),
-        "fallback": segment_fallback,
-        "fallback_reason": segment_fallback_msg,
-        "coverage": segment_coverage,
-        "quality": quality_detail or {"reason": ["empty"]},
-        "score": best.get("score", 0.0),
-        "model": best.get("model"),
-        "alpha_matting": best.get("alpha_matting", False),
-        "preproc": best.get("preproc", "none"),
-        "name": best.get("name"),
-        "attempts": attempt_summaries,
-    }
-    overlay = None
-    if debug_enabled:
-        debug_utils.save_debug_image(combined_mask, out_dir / "01_debug_mask.png")
-        overlay = debug_utils.prepare_overlay(image, combined_mask)
-    return segment_info, overlay, combined_mask
