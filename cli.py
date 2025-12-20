@@ -26,6 +26,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="仅分割/裁剪调试，不执行去透视与增强")
     parser.add_argument("--max-pages", type=int, default=None, help="最多处理的页数")
     parser.add_argument("--warmup", action="store_true", help="预热模型，避免首帧过慢")
+    parser.add_argument("--output-mode", choices=["review", "result", "debug"], default=None, help="输出模式：review/result/debug（覆盖配置）")
+    parser.add_argument("--tone", choices=["bw", "gray", "both"], default=None, help="输出色调：bw/gray/both（默认读取配置）")
     args = parser.parse_args()
 
     inputs = io_utils.list_images(args.input)
@@ -47,6 +49,8 @@ def main() -> None:
             debug_level=args.debug_level,
             dry_run=args.dry_run,
             max_pages=args.max_pages,
+            output_mode=args.output_mode,
+            tone=args.tone,
         )
 
 

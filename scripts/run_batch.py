@@ -33,6 +33,8 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true", help="仅分割/裁剪调试，不执行去透视与增强")
     parser.add_argument("--warmup", action="store_true", help="预热模型")
+    parser.add_argument("--output-mode", choices=["review", "result", "debug"], default=None, help="输出模式：review/result/debug（覆盖配置）")
+    parser.add_argument("--tone", choices=["bw", "gray", "both"], default=None, help="输出色调：bw/gray/both（默认读取配置）")
     parser.add_argument(
         "--pool",
         choices=["thread", "process"],
@@ -77,6 +79,8 @@ def main() -> None:
                 debug_level=args.debug_level,
                 dry_run=args.dry_run,
                 max_pages=None,
+                output_mode=args.output_mode,
+                tone=args.tone,
             )
             futures.append((fut, path))
         for fut, path in futures:

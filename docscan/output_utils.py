@@ -33,6 +33,11 @@ def save_page_outputs(
     """保存单页输出与调试图，返回 PageResult。"""
     extras: Dict[str, Any] = {}
     out_cfg = output_cfg or {}
+    tone = str(out_cfg.get("tone", "both")).lower()
+    if tone not in ("bw", "gray", "both"):
+        tone = "both"
+    save_gray = tone in ("both", "gray")
+    save_bw = tone in ("both", "bw")
     save_jpeg = out_cfg.get("save_jpeg", False)
     jpeg_quality = int(out_cfg.get("jpeg_quality", 95) or 95)
     preview_max_side = out_cfg.get("preview_max_side")
@@ -68,26 +73,38 @@ def save_page_outputs(
         extras["orientation_angle"] = orient_angle
         extras["orientation_score"] = orient_score
 
-    gray_path = out_dir / f"20_{file_prefix}_scan_gray.png"
-    bw_path = out_dir / f"21_{file_prefix}_scan_bw.png"
-    io_utils.save_image(gray_to_save, gray_path)
-    io_utils.save_image(bw_to_save, bw_path)
+    gray_path = None
+    bw_path = None
+    if save_gray:
+        gray_path = out_dir / f"20_{file_prefix}_scan_gray.png"
+        io_utils.save_image(gray_to_save, gray_path)
+    if save_bw:
+        bw_path = out_dir / f"21_{file_prefix}_scan_bw.png"
+        io_utils.save_image(bw_to_save, bw_path)
 
     if save_jpeg:
-        jpeg_gray = out_dir / f"20_{file_prefix}_scan_gray.jpg"
-        _save_jpeg(gray_to_save, jpeg_gray)
-        extras["jpeg_gray"] = str(jpeg_gray)
-        jpeg_bw = out_dir / f"21_{file_prefix}_scan_bw.jpg"
-        _save_jpeg(bw_to_save, jpeg_bw)
-        extras["jpeg_bw"] = str(jpeg_bw)
+        if save_gray:
+            jpeg_gray = out_dir / f"20_{file_prefix}_scan_gray.jpg"
+            _save_jpeg(gray_to_save, jpeg_gray)
+            extras["jpeg_gray"] = str(jpeg_gray)
+        if save_bw:
+            jpeg_bw = out_dir / f"21_{file_prefix}_scan_bw.jpg"
+            _save_jpeg(bw_to_save, jpeg_bw)
+            extras["jpeg_bw"] = str(jpeg_bw)
 
     if preview_max_side:
         try:
             max_side_int = int(preview_max_side)
-            preview = _resize_to_max_side(gray_to_save, max_side_int)
-            preview_path = out_dir / f"preview_{file_prefix}.jpg"
-            _save_jpeg(preview, preview_path)
-            extras["preview"] = str(preview_path)
+            preview_source = None
+            if save_gray:
+                preview_source = gray_to_save
+            elif save_bw:
+                preview_source = bw_to_save
+            if preview_source is not None:
+                preview = _resize_to_max_side(preview_source, max_side_int)
+                preview_path = out_dir / f"preview_{file_prefix}.jpg"
+                _save_jpeg(preview, preview_path)
+                extras["preview"] = str(preview_path)
         except Exception:
             pass
     if debug_level == "full":
@@ -110,8 +127,8 @@ def save_page_outputs(
         segment_fallback=segment_fallback,
         segment_fallback_reason=segment_fallback_msg,
         edge_mask=outputs.edge_info,
-        enhanced_gray_path=str(gray_path),
-        enhanced_bw_path=str(bw_path),
+        enhanced_gray_path=str(gray_path) if gray_path else None,
+        enhanced_bw_path=str(bw_path) if bw_path else None,
         dewarp=outputs.dewarp_info,
         curve_adjust=outputs.curve_info,
         refine=outputs.refine_info,

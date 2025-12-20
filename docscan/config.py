@@ -110,9 +110,11 @@ DEFAULTS: Dict[str, Any] = {
         },
     },
     "output": {
-        "save_jpeg": True,
+        "mode": "review",
+        "tone": "bw",
+        "save_jpeg": False,
         "jpeg_quality": 95,
-        "preview_max_side": 800,  # 预览图最长边
+        "preview_max_side": 0,  # 预览图最长边（0 表示关闭）
     },
     "run": {
         "debug": False,

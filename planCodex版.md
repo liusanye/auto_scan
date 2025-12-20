@@ -1,225 +1,86 @@
-# 文档拍照自动整理系统实现与改进方案（面向 Codex / 开发人员）
+# 文档拍照自动整理系统｜架构与演进说明（基于当前实现）
 
-> 目标：在 macOS（MacBook Air M3，CPU）上实现从“手机拍摄的文档照片”到“扫描风格图片 + Excel/结构化数据”的自动处理流水线，仅使用预训练模型。强调鲁棒性、性能可控、可降级与可扩展，避免以传统 OpenCV 检测作为核心识别手段。
+> 本文档用于描述当前代码的架构与演进路线，内容以 `docscan/*.py` 实现为准。
 
----
+## 1. 目标与范围
+- **输入**：手机拍摄的文档照片（单页/双页、光照不均、角度偏斜等）。
+- **输出**：扫描风格灰度图与二值图（PNG/JPEG 可选）。
+- **运行环境**：macOS / Apple Silicon CPU，仅使用预训练模型。
+- **当前范围**：OCR 模块存在但未接入主流程；主流程聚焦图像增强与扫描风格输出。
 
-## 0. 任务概览与改进要点
+## 2. 设计原则
+- **鲁棒性优先**：每一阶段都允许降级与兜底，保证“有结果”。
+- **性能可控**：输入尺寸统一限制，避免 CPU 负载失控。
+- **可配置**：关键阈值集中于 `docscan/config.py`。
+- **可回溯**：`run_summary.json` 保存每阶段耗时与降级信息，便于回归。
 
-你需要完成：
+## 3. 模块与职责（与代码一致）
+| 模块 | 文件 | 职责 |
+| --- | --- | --- |
+| CLI | `cli.py` | 解析参数、遍历输入、调用 pipeline |
+| 配置 | `docscan/config.py` | 默认配置、模式映射 |
+| Pipeline | `docscan/pipeline.py` | 串联流程、调试输出、summary |
+| 分割策略 | `docscan/segment_strategy.py` | 多策略分割执行与评分择优 |
+| 分割实现 | `docscan/segment.py` | rembg + 连通域 + 区域合并 |
+| 拆分页 | `docscan/page_split.py` | 单/双页判定与裁剪 |
+| 拆分页封装 | `docscan/split_module.py` | 拆分页开关与包装 |
+| 透视回退 | `docscan/dewarp.py` | 透视回退 + 轻量曲率微调 |
+| 几何精修 | `docscan/geom_refine.py` | A4 微调、deskew、透视 |
+| 增强 | `docscan/enhance.py` | division + CLAHE + Sauvola/Wolf |
+| 方向判定 | `docscan/orientation.py` | 0/90/180/270 方向打分 |
+| 输出 | `docscan/output_utils.py` | 保存 PNG/JPEG/预览 | 
+| 汇总 | `docscan/summary_utils.py` | run_summary 生成 |
+| 调试 | `docscan/debug_utils.py` | overlay 绘制与保存 |
 
-1) 按本文档结构搭建可运行的 Python 项目，串起“输入目录 → 扫描风格页面 + OCR 结构化”全流程。  
-2) 在 MacBook Air M3（CPU）可安装、可运行，单张耗时允许几秒级。  
-3) 不训练模型，仅用预训练模型/开源库；LLM 仅作可选后处理接口。  
-
-核心改进要点（相对初版）：
-- 兼容与降级：rembg/dewarp/OCR 全量加失败回退，最差也能裁剪+增强+OCR；dewarp 失败透视矩阵回退，可选轻量曲率拟合；OCR 失败记录并保留输入。
-- 性能与分辨率：统一最长边上限（建议 2048–2560）后再分割/表格检测；允许 rembg/onnxruntime 线程数配置（如 `OMP_NUM_THREADS=1`）；OCR 前可对表格局部二次放大。
-- 模式：`fast`（跳过 dewarp、轻量增强）、`quality`（全流程）、`auto`（按分辨率/核数自适应）。
-- 双页拆分稳健性：宽高比 + mask 水平投影谷值 + 左右对称度，低置信度标记“可能双页”。
-- 日志与调试：记录耗时、阈值、降级路径；debug 模式保存 mask、投影曲线、分割线、矫正前后图；输出 run-summary（耗时/置信度/降级/路径）。
-- 字段归一化：表头映射 YAML + 编辑距离/同义词、数字纠错规则可配置；LLM 作为可选 hook；按场景分 profile（如发票/采购/库存）。
-
----
-
-## 1. 项目概述
-
-### 1.1 功能目标
-
-输入：手机拍摄的报表/文档照片，可能有杂乱背景、歪斜、光照不均、单双页混合、分辨率/方向不一。  
-输出（每张原始照片）：
-1. 按页切分的“扫描风格”图片：自动识别纸张区域，透视/卷曲矫正，几何精修（边界规整、角度标准），黑白/高对比度灰度。  
-2. 每页对应的 OCR + 表格结构化结果：Excel/CSV + 结构化 JSON（字段尽量标准化）。
-
-### 1.2 约束
-
-- 环境：MacBook Air M3，Python CPU。单张几秒可接受。  
-- 不得训练模型；仅调用预训练模型/库。  
-- 允许调用 LLM 做后处理/字段归一化（需留接口，业务侧调用）。  
-- 禁止以传统 OpenCV 边缘/阈值/轮廓检测作为“核心找纸”手段；OpenCV 仅在模型输出基础上做几何润色。  
-
-### 1.3 流水线总览
-
-1) 页面分割 & 双页检测（模型主导）：rembg 前景分割 → mask 连通域 → 单/双页块。  
-2) 页面矫正（去透视/卷曲）：透视矩阵回退为主，可选轻量曲率拟合（自研/轻量算子），不依赖 page-dewarp。  
-3) 几何精修（OpenCV 润色）：轮廓拟合、A4 比例微调、deskew、统一留白。  
-4) 图像增强（扫描王风格）：division 归一化 + CLAHE + Sauvola + 轻量锐化；输出灰度增强与二值版。  
-5) OCR + 表格识别：PaddleOCR PP-Structure；分辨率上限控制；可灰度/二值对比取优。  
-6) 后处理 & 字段映射：表头归一化、数字纠错，可选 LLM；输出标准化 Excel/CSV/JSON。  
-
----
-
-## 2. 目录结构与模块划分
-
-```text
-docscan/
-  ├─ docscan/
-  │    ├─ __init__.py
-  │    ├─ config.py / config.yaml     # 参数模板：阈值、比例、窗口、模式/profile
-  │    ├─ io_utils.py                 # 文件读写、图像加载保存
-  │    ├─ segment.py                  # rembg + 连通域 + 形态学平滑
-  │    ├─ page_split.py               # 单/双页判定与拆分（宽高比+投影谷值+对称性）
-  │    ├─ dewarp.py                   # 透视回退 + 轻量曲率微调，无 page-dewarp 依赖
-  │    ├─ geom_refine.py              # 轮廓拟合、A4 微调、deskew、留白
-  │    ├─ enhance.py                  # division + CLAHE + Sauvola + 锐化/光照自适应
-  │    ├─ ocr_paddle.py               # PP-Structure 封装，分辨率上限，灰度/二值对比
-  │    ├─ postprocess.py              # 表头映射 + 数字纠错 + 可选 LLM hook
-  │    ├─ pipeline.py                 # 串联流程，fast/quality/auto 模式
-  ├─ scripts/run_batch.py             # 批量/并行驱动，进度条，失败重试，缓存
-  ├─ cli.py                           # --input/--output/--mode/--config/--debug 等
-  ├─ requirements.txt                 # 标注已测版本
-  ├─ README.md
-  └─ examples/                        # 单页、双页、旋转、光照不均样例
+## 4. 核心流程与降级路径
+```mermaid
+flowchart TD
+    A[读取图片/EXIF 方向矫正] --> B[尺寸限制 max_side/min_side]
+    B --> C[多策略分割]
+    C --> D{质量达标?}
+    D -->|否| E[切换策略/内容兜底]
+    D -->|是| F[进入拆分页]
+    E --> F
+    F --> G[透视回退 + 曲率微调]
+    G --> H[几何精修/deskew]
+    H --> I[扫描风格增强]
+    I --> J[方向校正]
+    J --> K[输出/summary]
 ```
 
----
+### 关键判定
+- **分割重试**：`score < 6` 且 `(area_ratio < 0.4 或 rect_ratio < 0.7)`。
+- **最终兜底**：`area_ratio < 0.20` 或 `rect_ratio < 0.60` 触发内容兜底；兜底失败回退整图。
+- **拆分页**：默认关闭 `split.enable_split=false`；开启后才评估双页。
 
-## 3. 依赖与环境
+## 5. 已实现能力
+- 多策略分割与评分择优。
+- 单/双页判定与裁剪（默认关闭，需手动开启）。
+- 透视回退 + 轻量曲率矫正。
+- 几何精修（A4 比例微调、deskew）。
+- 扫描风格增强（灰度/二值）。
+- 方向校正（基于投影方差）。
+- 批处理、策略抽样、烟囱测试与 summary 输出。
+- 输出色调可选（bw/gray/both，默认 bw）。
+- 输出模式管理（review/result/debug，默认 review）。
 
-- Python 3.10+。  
-- 核心依赖：
-  - `rembg`（依赖 onnxruntime，建议锁 silicon 轮子，提供线程/后端配置）。  
-  - `opencv-python-headless`（或 opencv-python，如冲突则换 headless）。  
-  - `paddlepaddle`（macOS CPU 轮子）+ `paddleocr`。  
-- 无需 page-dewarp，默认透视回退；可选轻量曲率微调（纯 OpenCV/Numpy）。  
-  - `numpy`、`Pillow`、`scikit-image`、`tqdm`、`pyyaml`。  
-- 可选：`pip-tools/poetry` 生成锁文件。  
-- README 必列：已验证版本、M 芯片安装命令、首次跑 PaddleOCR 建议空跑预热。  
+## 6. 未接入 / 预留项
+- OCR 及字段归一化：`ocr_paddle.py` / `postprocess.py` 未接入 pipeline。
+- 预处理评测结果未回流主流程（`eval_mask_presets.py` 仅用于评估）。
+- 若干配置项未接入：`segment` 组细节参数、`run.segment_preview_side`、`dewarp.enable_polyline`。
+- `output.orientation` 相关配置未在默认配置中提供，且未接入主流程。
 
----
+## 7. 质量与回归建议
+- **烟囱测试**：`scripts/smoke_test.py` 验证裁剪/几何/增强链路。
+- **策略抽样**：`scripts/run_strategy_batch.py` 抽样输出 `summary.csv` 与关键 debug 图。
+- **人工评审**：`bbox_review.md` 记录 `02_debug_bbox.png` 目视结论。
 
-## 4. 模块详细说明与接口约定（含改进）
+## 8. 路线图建议
+- **短期**：接入 OCR 阶段，完善结构化输出；清理未接入配置并统一入口。
+- **中期**：优化贴边弱梯度场景，补充高风险样本回归集。
+- **长期**：按场景 profile 扩展字段归一化与输出格式。
 
-### 4.1 segment.py —— 页面分割
-
-- rembg 前等比缩放到最长边上限；输出 mask 做中值/开闭运算平滑；支持线程/后端参数（如 OMP_NUM_THREADS）。  
-- 连通域按面积过滤、排序；记录面积比例、数量；保留 mask。  
-
-接口：
-```python
-PageRegion = Tuple[np.ndarray, Tuple[int, int, int, int]]  # (mask_region, bbox)
-def segment_pages(image: np.ndarray) -> List[PageRegion]: ...
-```
-
-### 4.2 page_split.py —— 单/双页判定与拆分
-
-- 判定：宽高比（如 >1.6）+ mask 水平投影谷值 + 左右面积对称度；谷值深度/面积比不足时标记“可能双页”。  
-- 分割线小窗口平滑搜索，失败回退几何中线；输出按左到右排序。  
-- 裁剪：单页按分割 mask 外接框裁剪，基础/额外扩边比例从配置读取；检测到细长副块（如竖排标题/装订条）可单侧定向扩展，并设置单侧上限防止整图化。  
-
-接口：
-```python
-def split_single_and_double_pages(image: np.ndarray, page_regions: List[PageRegion]) -> List[np.ndarray]: ...
-```
-
-### 4.3 dewarp.py —— 去透视/去卷曲
-
-- 透视矫正：mask 四边形透视矫正（minAreaRect → getPerspectiveTransform）；可选行偏移多项式小曲率修正（轻量，无外部依赖）。  
-- 失败日志，返回原图；参数化网格/缩放/迭代。  
-
-接口：
-```python
-def dewarp_page(page_image: np.ndarray) -> np.ndarray: ...
-```
-
-### 4.4 geom_refine.py —— OpenCV 几何精修
-
-- 基于已有页面图/mask：轮廓 → approxPolyDP/minAreaRect 得四边形。  
-- A4 比例微调：目标 1.414，容忍 ±10% 可配置。  
-- Deskew：角度限制（3–5°），失败回退原角度；先做 EXIF 方向修正。  
-- 统一留白：裁剪后加固定像素/比例留白。  
-
-接口：
-```python
-def refine_geometry_with_opencv(page_image: np.ndarray, page_mask: Optional[np.ndarray]=None) -> np.ndarray: ...
-```
-
-### 4.5 enhance.py —— 扫描风格增强
-
-- 灰度 → 大尺度模糊估计背景，division normalization。  
-- CLAHE（clip limit/tiles 可调），Sauvola，自适应 unsharp。  
-- 可选光照判定：背景方差高则增强 division 或调整 gamma。  
-- 输出灰度增强与二值图。  
-
-接口：
-```python
-def enhance_scan_style(page_image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]: ...
-```
-
-### 4.6 ocr_paddle.py —— 表格 OCR
-
-- 输入前限制分辨率上限；必要时对表格区域二次放大；可同时跑灰度/二值取置信度高者。  
-- 封装 PP-Structure V2，返回 cells/html/excel 路径、raw_json；支持模型目录缓存与预热。  
-- 失败重试一次，仍失败返回空占位并记录。  
-
-接口：
-```python
-def run_table_ocr(image_gray_or_bw: np.ndarray, output_dir: str, page_id: str) -> Dict[str, Any]: ...
-```
-
-### 4.7 postprocess.py —— 后处理 & 映射
-
-- 表头归一化：YAML 映射表 + 编辑距离/同义词；数字纠错规则（O→0, I/l→1, B→8 等）配置化；按场景 profile。  
-- 可选 LLM hook（配置开启才用），默认规则先行。  
-
-接口：
-```python
-def normalize_table(ocr_result: Dict[str, Any]) -> Dict[str, Any]: ...
-```
-
-### 4.8 pipeline.py —— 总控
-
-- 流程：读图 → segment → split → dewarp → geom_refine → enhance → OCR → normalize。  
-- 模式：`fast`（跳 dewarp，轻量增强）、`quality`（全流程）、`auto`（按分辨率/核数选）。  
-- 日志：每步耗时/降级标记；出错不中断；输出 run-summary（耗时、降级、置信度、路径）。  
-
-接口：
-```python
-def process_image_file(image_path: str, output_root: str, mode: str="quality") -> List[Dict[str, Any]]: ...
-```
-
----
-
-## 5. 命令行与批处理
-
-- CLI：`python cli.py --input path --output path --mode {fast,quality,auto} --config config.yaml --debug --max-pages --skip-ocr`  
-- 批处理：`scripts/run_batch.py`，支持目录批量，受控并发（OCR 串行或小并发），tqdm 进度，错误汇总，失败重试，已处理缓存（哈希）。  
-- 输出示例：`page_001_scan_gray.png`、`page_001_scan_bw.png`、`page_001_ocr.xlsx/json`、`debug/mask.png` 等；生成 summary（csv/json）汇总路径/耗时/置信度/降级。  
-
----
-
-## 6. 配置与日志
-
-- 所有阈值/比例/窗口/角度/留白/分辨率上限集中 config.py 或 YAML；模式（fast/quality/auto）与场景 profile（发票/采购等）可切换。  
-- 日志：默认 INFO；DEBUG 落盘中间结果；记录文件名、页号、耗时、降级路径；支持 JSON 行格式便于统计。  
-
----
-
-## 7. 验证与风险缓释
-
-- 样例：`examples/` 准备 3–5 张（单页、双页、强光差、旋转 ~10°）。  
-- 最小集成测试：跑 `process_image_file`，断言输出存在、日志无 ERROR；验证 dewarp/OCR 失败回退路径。  
-- 依赖验证：在目标硬件先跑安装与空跑，README 记录成功命令与版本；无需 page-dewarp，默认透视回退即可。  
-
----
-
-## 8. 后续扩展
-
-- 替换/新增 dewarp 模型；可插拔 OCR（Surya/docTR）。
-- 支持多页 PDF 输入/输出（PNG 聚合 PDF）。
-- 几何精修可增加装订册中缝校正策略。
-- 业务对接：REST API/数据库写入适配层。
-
----
-
-## 9. 落地可行性与运行保障（针对 MacBook Air M3）
-
-- 依赖可用性：onnxruntime-silicon、paddlepaddle-macos、opencv-python-headless 可在 M3 安装；不依赖 page-dewarp。  
-- 预热与缓存：提供 `--warmup` 选项，对 rembg/OCR 空跑预热；配置模型缓存目录，避免重复下载。
-- 分辨率与内存保护：入口强制最长边上限（建议 2048–2560）、最小边下限；rembg、OCR 各自独立的尺寸上限；超限等比压缩。
-- 线程与并发：推荐环境变量 `OMP_NUM_THREADS=1`；OCR 默认串行，其余环节可小并发；run_batch 可配置并发度，默认保守。
-- 方向与旋转：入口统一 EXIF 方向矫正；若整体倾斜 >10°，先轻量 deskew 再分割，提升双页判定稳定性。
-- 回退链显式：dewarp→透视→原图；OCR 灰度→二值→纯文本；segment 失败→全图裁剪+留白；run-summary 记录实际路径。
-- 质量选择：OCR 阶段灰度/二值对比取置信度高者；增强支持轻量/标准/强，与 fast/quality/auto 模式联动。
-- 调试与可观测：debug 保存 mask、投影曲线、四边形顶点、deskew 角度、矫正前后对比；run-summary 输出耗时、置信度、降级标记、输出路径。
-- 性能基准：README 标注在 M3 上的参考耗时（fast/quality），便于发现异常；提供 smoke test 覆盖样例图，自动检查输出存在且日志无 ERROR。
+## 9. 相关文档
+- 入口说明：`README.md`
+- 变更记录：`DEVLOG.md`
+- 评审记录：`bbox_review.md`

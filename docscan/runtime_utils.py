@@ -12,6 +12,36 @@ from docscan import config as cfg
 from docscan import io_utils
 
 
+def _apply_output_mode(conf: dict, output_mode: str | None) -> None:
+    """根据输出模式调整 debug 与输出选项。"""
+    if output_mode:
+        conf.setdefault("output", {})["mode"] = output_mode
+    mode = (conf.get("output") or {}).get("mode")
+    if not mode:
+        return
+    mode = str(mode).lower()
+    out_cfg = conf.setdefault("output", {})
+    run_cfg = conf.setdefault("run", {})
+    if mode == "debug":
+        run_cfg["debug"] = True
+        run_cfg["debug_level"] = "full"
+        out_cfg.setdefault("tone", "both")
+        out_cfg["save_jpeg"] = True
+        out_cfg["preview_max_side"] = int(out_cfg.get("preview_max_side") or 800)
+    elif mode == "review":
+        run_cfg["debug"] = True
+        run_cfg["debug_level"] = "bbox"
+        out_cfg.setdefault("tone", "bw")
+        out_cfg["save_jpeg"] = False
+        out_cfg["preview_max_side"] = 0
+    elif mode == "result":
+        run_cfg["debug"] = False
+        run_cfg["debug_level"] = "none"
+        out_cfg.setdefault("tone", "bw")
+        out_cfg["save_jpeg"] = False
+        out_cfg["preview_max_side"] = 0
+
+
 def build_runtime_config(
     mode: str,
     profile: str | None,
@@ -20,11 +50,14 @@ def build_runtime_config(
     debug_level: str | None,
     dry_run: bool,
     max_pages: int | None,
+    output_mode: str | None = None,
+    tone: str | None = None,
 ) -> tuple[dict, str, bool]:
     """
-    加载配置并应用 debug/dry_run/max_pages 开关，返回 (conf, debug_level, debug_enabled)。
+    加载配置并应用 output/debug/dry_run/max_pages 开关，返回 (conf, debug_level, debug_enabled)。
     """
     conf = cfg.load_config(config_path, mode=mode, profile=profile)
+    _apply_output_mode(conf, output_mode)
     if debug_level:
         conf["run"]["debug_level"] = debug_level
         conf["run"]["debug"] = debug_level != "none"
@@ -36,6 +69,8 @@ def build_runtime_config(
         conf["run"]["debug_level"] = conf["run"].get("debug_level", "none")
     conf["run"]["max_pages"] = max_pages
     conf["run"]["dry_run"] = dry_run
+    if tone:
+        conf.setdefault("output", {})["tone"] = tone.lower()
     debug_level_eff = (conf["run"].get("debug_level") or "none").lower()
     debug_enabled = debug_level_eff != "none"
     return conf, debug_level_eff, debug_enabled

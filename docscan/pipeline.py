@@ -388,6 +388,8 @@ def process_image_file(
     debug_level: str | None = None,
     dry_run: bool = False,
     max_pages: int | None = None,
+    output_mode: str | None = None,
+    tone: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     读图 → segment → split → dewarp → geom_refine → enhance。
@@ -401,6 +403,8 @@ def process_image_file(
         debug_level=debug_level,
         dry_run=dry_run,
         max_pages=max_pages,
+        output_mode=output_mode,
+        tone=tone,
     )
 
     image, h_raw, w_raw, h, w, effective_mode = runtime_utils.prepare_image_and_mode(image_path, conf)
