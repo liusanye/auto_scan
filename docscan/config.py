@@ -43,7 +43,8 @@ DEFAULTS: Dict[str, Any] = {
         },
     },
     "split": {
-        "enable_double": True,  # 按方案默认开启双页判定
+        "enable_split": False,  # 默认跳过拆分页，按单页整页处理
+        "enable_double": True,  # 如启用拆分，则可按双页判定
         "double_ratio_threshold": 1.6,
         "valley_prominence": 0.08,
         "symmetry_tolerance": 0.25,
@@ -81,13 +82,39 @@ DEFAULTS: Dict[str, Any] = {
     },
     "enhance": {
         "profile": "quality",  # fast/quality/auto
+        "bw_method": "sauvola",  # sauvola | wolf
         "clahe_clip": 2.0,
         "clahe_grid": 8,
         "sauvola_window": 31,
         "sauvola_k": 0.2,
+        "wolf_k": 0.2,
+        "bw_pre_smooth_ksize": 0,  # 回到默认：阈值前不平滑
         "unsharp_amount": 0.6,
         "unsharp_ksize": 5,
         "division_blur": 31,
+        "ocr_alt_profile": None,  # 默认关闭额外 OCR 档
+        "profiles": {},
+        "denoise": {
+            "enable": False,
+            "bilateral_d": 0,
+            "bilateral_sigma_color": 0,
+            "bilateral_sigma_space": 0,
+            "post_morph_open": False,
+            "post_morph_ksize": 3,
+            "post_min_area": 0,
+        },
+        "orientation": {
+            "adjust_output": True,  # 是否对最终输出做方向旋正（生成副本）
+            "save_raw_bw": True,    # 是否保留未旋转的 bw 原图
+            "score_threshold": 1.2, # 简易打分阈值，低于不旋转
+        },
+    },
+    "output": {
+        "mode": "review",
+        "tone": "bw",
+        "save_jpeg": False,
+        "jpeg_quality": 95,
+        "preview_max_side": 0,  # 预览图最长边（0 表示关闭）
     },
     "run": {
         "debug": False,

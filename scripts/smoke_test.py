@@ -18,9 +18,16 @@ def _check_outputs(pages: list[dict]) -> int:
         if page.get("error"):
             failed += 1
             continue
+        expected = []
         for key in ("enhanced_gray_path", "enhanced_bw_path"):
             path_str = page.get(key)
-            if not path_str or not Path(path_str).exists():
+            if path_str:
+                expected.append(path_str)
+        if not expected:
+            failed += 1
+            continue
+        for path_str in expected:
+            if not Path(path_str).exists():
                 failed += 1
                 break
     return failed
@@ -33,6 +40,8 @@ def main() -> None:
     parser.add_argument("--mode", default="fast", choices=["fast", "quality", "auto"], help="处理模式（无 OCR）")
     parser.add_argument("--max-files", type=int, default=3, help="最多处理的图片数量")
     parser.add_argument("--debug", action="store_true", help="是否输出调试图")
+    parser.add_argument("--output-mode", choices=["review", "result", "debug"], default=None, help="输出模式：review/result/debug（覆盖配置）")
+    parser.add_argument("--tone", choices=["bw", "gray", "both"], default=None, help="输出色调：bw/gray/both（默认读取配置）")
     args = parser.parse_args()
 
     inputs = list(io_utils.list_images(args.input))
@@ -54,8 +63,10 @@ def main() -> None:
             profile=None,
             config_path=None,
             debug=args.debug,
-            debug_level="bbox" if args.debug else "none",
+            debug_level="bbox" if args.debug else None,
             max_pages=None,
+            output_mode=args.output_mode,
+            tone=args.tone,
         )
         total_pages += len(pages)
         failed_pages += _check_outputs(pages)

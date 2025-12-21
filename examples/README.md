@@ -1,8 +1,8 @@
 # 示例说明
 
-- 当前项目不随仓库提供真实样例图片，可使用仓库中的 `source_images/` 作为输入示例。
-- 推荐通过 `scripts/smoke_test.py` 跑一轮跳过 OCR 的烟囱测试，验证裁剪/几何/增强链路是否正常：
+- 仓库不随代码提供可公开样例图片，`source_images/` 仅作为本地回归素材。
+- 推荐使用烟囱测试验证裁剪/几何/增强链路：
   ```bash
-  python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2
+  python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug
   ```
-- 如需自带样例，请在此目录放入少量照片（单页、双页、旋转等），并更新 README/DEVLOG 记录。***
+- 如需自带样例，请在本目录放入少量图片（单页、双页、旋转、光照不均等），并同步更新 `README.md` / `DEVLOG.md` 记录样本来源与用途。

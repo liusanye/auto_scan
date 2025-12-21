@@ -1,41 +1,41 @@
 # 开发记录 / 记忆总览
 
-> 所有人接手前必须先读本文件与 `README.md`。确保一屏掌握环境、当前能力、风险与下一步。
+> 接手前必须先读本文件与 `README.md`。本文件用于记录“当前状态 + 风险 + 变更记录”，以便快速恢复上下文。
 
 ## 接手速览（实时维护）
-- 环境：根目录已有 `.venv`，进入后执行 `source .venv/bin/activate` 且 `export PYTHONPATH=.`。依赖按 `requirements.txt` 安装，Apple Silicon 建议显式安装 `onnxruntime-silicon` 与 `numpy<2.0`。建议 `OMP_NUM_THREADS=1`。
-- 版本与分支：当前分支 `feature/preproc-module`，HEAD `71c97b9`（策略执行器稳定版 1.1），工作区干净。
-- 运行常用命令：  
-  - 单文件/目录：`PYTHONPATH=. .venv/bin/python cli.py --input <path> --output outputs --mode quality --debug-level bbox`  
-  - 批量：`PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox`  
+- 环境：主开发/运行环境为 Python 3.11（`.venv311`），进入后执行 `source .venv311/bin/activate` 且 `export PYTHONPATH=.`。依赖按 `requirements.txt` 安装，Apple Silicon 建议显式安装 `onnxruntime-silicon` 与 `numpy<2.0`。建议 `OMP_NUM_THREADS=1`。
+- 版本与分支：当前分支 `feature/post-seg-processing`，HEAD `1a1b13e`（pipeline 抽取五个模块功能）。若接手时不一致，以 `git status -sb` / `git log -1` 为准。
+- 运行常用命令：
+  - 单文件/目录：`PYTHONPATH=. .venv/bin/python cli.py --input <path> --output outputs --mode quality --debug-level bbox`
+  - 批量：`PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox`
   - 烟囱测试（无 OCR）：`PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug`
-- 当前能力：仅输出扫描风格灰度/二值图（无 OCR）。分割多策略兜底，单/双页拆分，透视回退+轻量曲率微调，粉框精修，扫描风格增强。`debug-level=bbox` 仅输出关键调试图，`full` 输出全部中间件。
-- 输出位置与命名：每个输入对应 `outputs/<stem>/`，调试前缀 01/02，中间件 10-14，正式输出 20/21，元数据 `run_summary.json`。
-- 已知风险：贴边弱梯度可能残留背景；曲率矫正为轻量级；高分辨率大图需控制最长边；OCR 未接入主流程。
+- 当前能力：默认输出模式 `review`（mask + bbox + bw，可选灰度或双输出，无 OCR）；多策略分割兜底；单双页拆分逻辑可用但默认关闭；透视回退+轻量曲率微调；几何精修；扫描风格增强；方向校正（默认开启）。
+- 输出位置与命名：每个输入对应 `outputs/<stem>/`，调试前缀 01/02，中间件 10–14（仅 debug-level=full），正式输出默认 21（20 为可选灰度）；debug-level=full 另有 `attempts/attempts.json` 与策略 mask；元数据 `run_summary.json`。
+- 已知风险：贴边弱梯度可能残留背景；曲率矫正为轻量级；高分辨率大图需控制最长边；OCR 未接入主流程；部分配置项未接入（见 README“实现备注”）。
 
 ## 维护铁律
 - “接手速览”必须实时更新任何影响环境/运行/能力/输出的信息。
 - 阶段性进展或有效调试结果务必用 git 提交；高风险/实验性改动新建分支。
-- 任何反馈、风险、异常或恢复操作，先更新本文件再执行。
+- 任何影响运行、配置、输出的改动，需同步更新 `DEVLOG.md` 与 `README.md`。
 - 语言与注释全部使用中文；如发现描述与代码不符，先改文档再改代码。
 - 质检需要目视（可用多模态），不能只看日志；结论写明检查方法与样本。
 - OCR 开发另起分支，未验证前不得混入主流程；分支合并需补全文档与测试记录。
 
 ## 当前状态
-- 分割：`segment_strategy` 顺序尝试 u2net → u2netp+matting → light+u2netp+matting；面积<20%或矩形度<0.6 自动内容兜底，评分使用 `mask_utils.score_paper_mask`。
-- 拆分与裁剪：`page_split` 支持单/双页判定（宽高比+投影谷值+对称度），单页裁剪可扩边，贴边弱梯度可削边；分割不足时可局部/全局内容兜底。
+- 分割：`segment_strategy` 顺序尝试 u2net → u2netp+matting → light+u2netp+matting；重试阈值 `score<6 且 (area<0.4 或 rect<0.7)`，最终低于 `area<0.20` 或 `rect<0.60` 触发内容兜底；评分使用 `mask_utils.score_paper_mask`。
+- 拆分与裁剪：`split.enable_split=false` 默认跳过拆分页；开启后按宽高比 + 投影谷值 + 对称度判定双页，单页裁剪支持扩边/右侧最小扩边与内容兜底。
 - 去透视与曲率：`dewarp` 透视回退（四边形失败退矩形），`gentle_curve_adjust` 做轻量二次拟合微调。
 - 几何精修：`geom_refine` 粉框透视 + A4 比例微调 + deskew，覆盖率不足时退矩形或跳过透视。
-- 增强：`enhance` 采用 division + CLAHE + Sauvola + 轻量锐化，输出灰度/二值。
-- 预处理：历史前置预处理模块已删除，当前仅使用 rembg 内置预处理；如需新方案需另开分支验证。
-- OCR：`ocr_paddle.py` 在代码中可用，但 pipeline 未调用；后续接入需新增阶段。
+- 增强：`enhance` 采用 division + CLAHE + Sauvola（可选 Wolf）+ 轻量锐化，输出灰度/二值。
+- 方向校正：基于投影方差判定 0/90/180/270，置信度阈值 1.2，默认开启。
+- 预处理：历史前置预处理模块已删除，当前仅使用 rembg 内置预处理。
+- OCR：`ocr_paddle.py` 与 `postprocess.py` 已存在，但 pipeline 未调用。
 
 ## TODO（按优先级粗排）
+- 集成 OCR 流程：在 pipeline 增加 OCR 阶段（灰度/二值择优），补充输出与日志。
 - 贴边弱梯度/背景残留场景：探索内容补全或边界削弱的改进方案，回归高风险样本。
-- 集成 OCR 流程：在 pipeline 中增加 OCR 阶段（灰度/二值择优），补充输出与日志。
-- 前置预处理新方案：设计可开关的多路预处理+评分择优，验证后再合并主干。
-- 运行一轮烟囱测试（scripts/smoke_test.py）并更新结果，作为基准。
-- 配置化检查：确认重要阈值是否仍硬编码，必要时下沉到 config。
+- 清理与接入未生效配置：`segment` 组细节参数、`run.segment_preview_side`、方向校正配置入口。
+- 运行一轮烟囱测试（`scripts/smoke_test.py`）并更新结果，作为基准。
 - 大批量评审：抽样 20+ 张质量模式 + bbox 调试，目视 `02_debug_bbox.png`，记录问题与建议。
 
 ## 记录指引
@@ -61,5 +61,15 @@
 - 2025-12-18：重构续作：`pipeline.py` 接入 `PipelineContext/PageResult`，分割统计收敛到 `_aggregate_segment`，warmup 改为 `_run_segmentation`；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：阶段3（进行中）：分割策略与重试阈值配置化（config.segment_strategy/segment_retry.condition），pipeline 使用配置构建策略并套用阈值；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：阶段3回归：`scripts/run_strategy_batch.py --num 3 --mode quality --debug-level bbox` 在 source_images 抽样通过，summary 输出于 outputs_strategy_tmp/summary.csv。
-- 2025-12-18：阶段4（封装收敛）：overlay 生成/保存收敛到 debug_utils（prepare_overlay/save_overlay），summary 构建收敛到 summary_utils.build_summary，pipeline 统一使用 PipelineContext 承载耗时与输出路径；烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：阶段4（封装收敛）：overlay 生成/保存收敛到 debug_utils（prepare_overlay/save_overlay），summary 构建收敛到 summary_utils.build_summary，新增 runtime_utils/segment_report 拆分配置与分割报告；pipeline 侧行为不变。烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
 - 2025-12-18：里程碑：重构阶段1-4 完成并通过烟囱 + 策略抽样回归，阶段5（贴边弱梯度专项）暂缓。
+- 2025-12-18：增强与输出扩展：enhance 支持可选 Wolf-Jolion 阈值（bw_method=wolf）、输出配置新增 jpeg/preview 选项；新增 postproc/output_utils 模块配合 pipeline 调度。烟囱测试 2 张（fast+debug）通过，输出目录 outputs_smoke_tmp。
+- 2025-12-18：撤回 Wolf 试验，恢复默认 Sauvola 参数（关闭二值前平滑），保持 PNG+JPEG+预览输出开关。策略抽样 5 张（quality+bbox）通过，输出目录 outputs_strategy_tmp。
+- 2025-12-18：新增方向判定模块 orientation（0/90/180/270 简易打分），单页处理时根据裁剪页判断方向并旋转；分割凸包描边改为蓝色调试线。当前默认开启，低于阈值不旋转；抽样 20 张（quality+bbox）输出目录 outputs_strategy_full。
+- 2025-12-19：修复 053 空白/框偏移问题：默认关闭拆分页（split.enable_split=False，跳过时回退整页 bbox），拆分封装为 split_module；方向矫正只作用于输出副本并保留原始 bw（21_*_scan_bw_raw）。验证 image_053 正常，框对齐。
+- 2025-12-20：提交“pipeline，抽取五个模块功能”（`1a1b13e`）：抽离 `postproc/output_utils/runtime_utils/segment_report/split_module` 等模块，pipeline 进一步瘦身。
+- 2025-12-20：文档与代码对齐，重写 README/planCodex/示例说明，完善配置与限制说明。
+- 2025-12-20：输出色调支持 `bw/gray/both`（默认 bw），CLI 增加 `--tone`，烟囱测试适配仅输出二值图。
+- 2025-12-20：输出模式支持 `review/result/debug`（默认 review），CLI 增加 `--output-mode`，便于成果/评审/调试切换。
+- 2025-12-20：新增 Python 3.11 环境（`.venv311`）并完成回归；后续以 3.11 作为主开发/运行版本。
+- 2025-12-21：可视化调试补齐分割策略 attempts 输出（mask + manifest），新增 `DEBUG_TUTORIAL.md` 解释用途与判读方法。
