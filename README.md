@@ -9,6 +9,7 @@
 - `DEVLOG.md`：接手速览、变更记录与风险清单
 - `planCodex版.md`：架构与演进路线（设计视角）
 - `bbox_review.md`：人工 bbox 评审流水账
+- `DEBUG_TUTORIAL.md`：可视化调试与成果使用教程
 - `examples/README.md`：样例与回归说明
 
 ## 快速开始
@@ -141,7 +142,11 @@ graph TD
   - `01_debug_mask.png`：分割 mask
   - `02_debug_bbox.png`：叠加绿框（裁剪 bbox）+ 粉框（refine quad）+ 蓝色凸包
   - `10/11/12/13/14_*`：仅 `debug-level=full` 才输出
+  - `attempts/attempts.json`：分割策略尝试明细（仅 `debug-level=full`）
+  - `attempts/*_combined.png`：每次尝试的合并 mask
+  - `attempts/*_main.png`：每次尝试的主体 mask
 - `run_summary.json`：记录模式、耗时、降级、分割尝试细节、输出路径与 debug overlay。
+- 可视化调试说明见 `DEBUG_TUTORIAL.md`。
 
 ## 输出模式（output.mode）
 - `review`：质量审阅模式，输出 `01_debug_mask.png` + `02_debug_bbox.png` + `21_*_scan_bw.png`，`debug-level=bbox`，默认不产出 JPEG/preview。

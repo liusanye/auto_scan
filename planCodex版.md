@@ -63,6 +63,7 @@ flowchart TD
 - 批处理、策略抽样、烟囱测试与 summary 输出。
 - 输出色调可选（bw/gray/both，默认 bw）。
 - 输出模式管理（review/result/debug，默认 review）。
+- 可视化调试：debug-level=full 输出策略 attempts 的 mask 与 manifest。
 
 ## 6. 未接入 / 预留项
 - OCR 及字段归一化：`ocr_paddle.py` / `postprocess.py` 未接入 pipeline。
@@ -84,3 +85,4 @@ flowchart TD
 - 入口说明：`README.md`
 - 变更记录：`DEVLOG.md`
 - 评审记录：`bbox_review.md`
+- 调试教程：`DEBUG_TUTORIAL.md`

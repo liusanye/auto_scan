@@ -468,6 +468,7 @@ def process_image_file(
         segment_fallback_msg=segment_fallback_msg,
         best=best,
         debug_enabled=debug_enabled,
+        debug_level=debug_level,
         out_dir=out_dir,
     )
 

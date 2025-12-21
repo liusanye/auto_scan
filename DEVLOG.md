@@ -10,7 +10,7 @@
   - 批量：`PYTHONPATH=. .venv/bin/python scripts/run_batch.py --input source_images --output outputs --mode auto --concurrency 2 --debug-level bbox`
   - 烟囱测试（无 OCR）：`PYTHONPATH=. .venv/bin/python scripts/smoke_test.py --input source_images --output outputs_smoke --mode fast --max-files 2 --debug`
 - 当前能力：默认输出模式 `review`（mask + bbox + bw，可选灰度或双输出，无 OCR）；多策略分割兜底；单双页拆分逻辑可用但默认关闭；透视回退+轻量曲率微调；几何精修；扫描风格增强；方向校正（默认开启）。
-- 输出位置与命名：每个输入对应 `outputs/<stem>/`，调试前缀 01/02，中间件 10–14（仅 debug-level=full），正式输出默认 21（20 为可选灰度），元数据 `run_summary.json`。
+- 输出位置与命名：每个输入对应 `outputs/<stem>/`，调试前缀 01/02，中间件 10–14（仅 debug-level=full），正式输出默认 21（20 为可选灰度）；debug-level=full 另有 `attempts/attempts.json` 与策略 mask；元数据 `run_summary.json`。
 - 已知风险：贴边弱梯度可能残留背景；曲率矫正为轻量级；高分辨率大图需控制最长边；OCR 未接入主流程；部分配置项未接入（见 README“实现备注”）。
 
 ## 维护铁律
@@ -72,3 +72,4 @@
 - 2025-12-20：输出色调支持 `bw/gray/both`（默认 bw），CLI 增加 `--tone`，烟囱测试适配仅输出二值图。
 - 2025-12-20：输出模式支持 `review/result/debug`（默认 review），CLI 增加 `--output-mode`，便于成果/评审/调试切换。
 - 2025-12-20：新增 Python 3.11 环境（`.venv311`）并完成回归；后续以 3.11 作为主开发/运行版本。
+- 2025-12-21：可视化调试补齐分割策略 attempts 输出（mask + manifest），新增 `DEBUG_TUTORIAL.md` 解释用途与判读方法。
