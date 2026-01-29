@@ -16,6 +16,12 @@ from docscan.pipeline import process_image_file, warmup_models
 from docscan import io_utils
 
 try:
+    from PIL import Image
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
+try:
     from fastmcp import FastMCP
 except ImportError:
     raise ImportError(
@@ -202,6 +208,119 @@ def scan_directory(
         "results": results_summary,
         "errors": errors if errors else None,
     }
+
+
+@mcp.tool()
+def convert_to_pdf(
+    input_paths: list[str],
+    output_path: str | None = None,
+    combine: bool = False,
+) -> dict[str, Any]:
+    """
+    Convert scanned images to PDF format.
+
+    Args:
+        input_paths: List of image file paths to convert
+        output_path: Output PDF path (optional, defaults to docscan_outputs/)
+        combine: If True, combine all images into a single PDF; if False, create separate PDFs
+
+    Returns:
+        Dictionary with success status and output PDF paths
+    """
+    if not _PIL_AVAILABLE:
+        return {
+            "success": False,
+            "error": "PIL (Pillow) is required for PDF conversion. Install with: pip install Pillow",
+        }
+
+    # Validate input files
+    valid_inputs = []
+    for path in input_paths:
+        p = Path(path)
+        if p.exists():
+            valid_inputs.append(p)
+        else:
+            return {
+                "success": False,
+                "error": f"Input file not found: {path}",
+            }
+
+    if not valid_inputs:
+        return {
+            "success": False,
+            "error": "No valid input files provided",
+        }
+
+    # Determine output directory
+    if output_path:
+        out_path = Path(output_path)
+        if out_path.suffix == "":
+            out_path.mkdir(parents=True, exist_ok=True)
+            output_dir = out_path
+            output_file = None
+        else:
+            output_dir = out_path.parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file = out_path
+    else:
+        output_dir = Path.cwd() / "docscan_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = None
+
+    output_pdfs = []
+
+    try:
+        if combine:
+            # Combine all images into one PDF
+            if output_file:
+                pdf_path = output_file
+            else:
+                pdf_path = output_dir / "combined.pdf"
+
+            images = []
+            for img_path in valid_inputs:
+                img = Image.open(img_path)
+                # Convert to RGB if necessary (for PNG with transparency)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                images.append(img)
+
+            # Save first image, append others
+            images[0].save(
+                pdf_path,
+                "PDF",
+                resolution=100.0,
+                save_all=True,
+                append_images=images[1:]
+            )
+            output_pdfs.append(str(pdf_path))
+
+        else:
+            # Create separate PDFs for each image
+            for img_path in valid_inputs:
+                img = Image.open(img_path)
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+
+                pdf_name = img_path.stem + ".pdf"
+                pdf_path = output_dir / pdf_name
+                img.save(pdf_path, "PDF", resolution=100.0)
+                output_pdfs.append(str(pdf_path))
+
+        return {
+            "success": True,
+            "input_count": len(valid_inputs),
+            "output_pdfs": output_pdfs,
+            "combined": combine,
+        }
+
+    except Exception as e:
+        log.exception("Failed to convert to PDF")
+        return {
+            "success": False,
+            "error": str(e),
+        }
 
 
 @mcp.tool()

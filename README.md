@@ -94,11 +94,52 @@ args = ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
 
 然后重启 OpenCode。
 
-### 第 4 步：使用
+### 第 4 步：使用教程
 
-配置完成后，可以直接对话：
+配置完成后，可以直接用自然语言对话：
+
+#### 基本扫描
+
 - *"帮我扫描 ~/Documents/photo.jpg"*
-- *"把 ~/Documents 里的所有文档处理成扫描件"*
+- *"把 ~/Documents 里的所有文档照片处理成扫描件"*
+
+**默认行为**：
+- 输出到当前目录下的 `docscan_outputs/` 文件夹
+- 输出扫描后的图片（黑白二值图）
+
+#### Debug 模式
+
+如果你想看 AI 是如何识别文档区域的（调试图）：
+
+- *"帮我扫描这张照片，需要 debug"*
+- *"扫描 ~/docs 目录，输出调试图看看效果"*
+
+**Debug 模式会额外输出**：
+- `01_debug_mask.png` - AI 识别出的文档区域 mask
+- `02_debug_bbox.png` - 检测到的边界框可视化
+
+#### 输出 PDF
+
+扫描完成后可以转换成 PDF：
+
+- *"把刚才扫描的图片转成 PDF"*
+- *"将 ~/docs 里的所有扫描件合并成一个 PDF"*
+
+**PDF 功能**：
+- 单图转 PDF：每张图生成一个独立的 PDF
+- 合并 PDF：多张照片合并成一个 PDF 文件
+
+#### 批量处理示例
+
+完整的工作流对话示例：
+
+```
+你: 帮我把 ~/Documents/receipts 里的所有照片扫描成扫描件
+AI: [处理中...] 已扫描 10 张照片，输出到 docscan_outputs/
+
+你: 把它们合并成一个 PDF
+AI: [处理中...] 已生成 combined.pdf
+```
 
 **更多详细说明**见 [INSTALL.md](./INSTALL.md)
 
