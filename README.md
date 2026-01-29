@@ -17,23 +17,90 @@
 
 本工具依赖 AI 模型（约 400MB），**必须先预热下载**，否则第一次使用会卡住 2-5 分钟。
 
-### 快速安装（5 步）
+### 第 1 步：安装 uv（所有客户端都需要）
 
 ```bash
-# 1. 安装 uv（如果还没有）
+# macOS/Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. 预热（下载 400MB 模型，约 2-5 分钟）
-uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
-
-# 3. 配置（只是写配置，不下载）
-claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
-
-# 4. 重启 Claude Code
-# 5. 使用："帮我扫描 ~/Documents/photo.jpg"
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-**详细说明和其他客户端配置**（Codex CLI、Gemini CLI、OpenCode）见 [INSTALL.md](./INSTALL.md)
+### 第 2 步：预热（下载 400MB 模型，约 2-5 分钟）
+
+**所有客户端都执行这一步（只需做一次）：**
+
+```bash
+uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
+```
+
+### 第 3 步：配置你的 AI 客户端
+
+根据你使用的客户端选择对应的配置方式：
+
+#### Claude Code
+
+```bash
+claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+```
+
+然后重启 Claude Code。
+
+#### Codex CLI
+
+编辑 `~/.codex/config.toml`，添加：
+
+```toml
+[mcp_servers.docscan]
+command = "uvx"
+args = ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
+```
+
+然后重启 Codex。
+
+#### Gemini CLI
+
+编辑 `~/.gemini/settings.json`，添加：
+
+```json
+{
+  "mcpServers": {
+    "docscan": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
+    }
+  }
+}
+```
+
+然后重启 Gemini CLI。
+
+#### OpenCode
+
+编辑项目根目录的 `opencode.jsonc`，添加：
+
+```jsonc
+{
+  "mcp": {
+    "docscan": {
+      "type": "local",
+      "command": ["uvx", "--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+然后重启 OpenCode。
+
+### 第 4 步：使用
+
+配置完成后，可以直接对话：
+- *"帮我扫描 ~/Documents/photo.jpg"*
+- *"把 ~/Documents 里的所有文档处理成扫描件"*
+
+**更多详细说明**见 [INSTALL.md](./INSTALL.md)
 
 ---
 
