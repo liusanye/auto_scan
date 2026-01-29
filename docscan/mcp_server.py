@@ -49,29 +49,31 @@ def scan_document(
     output_path: str | None = None,
     mode: str = "quality",
     tone: str = "bw",
+    debug: bool = False,
 ) -> dict[str, Any]:
     """
     Scan a document photo and convert it to a clean scanned image.
-    
+
     Args:
         input_path: Path to the input image file
-        output_path: Path for the output image (optional, defaults to input_path_scan.ext)
+        output_path: Path for the output image (optional, defaults to docscan_outputs/)
         mode: Processing mode - "fast", "quality", or "auto"
         tone: Output tone - "bw" (black & white), "gray", or "both"
-    
+        debug: If True, output debug files (mask, bbox overlay) for inspection
+
     Returns:
         Dictionary with success status, output paths, and processing info
     """
     # 延迟加载模型（首次调用时才加载）
     _ensure_models_loaded()
-    
+
     input_file = Path(input_path)
     if not input_file.exists():
         return {
             "success": False,
             "error": f"Input file not found: {input_path}",
         }
-    
+
     # Determine output directory
     if output_path:
         out_path = Path(output_path)
@@ -82,16 +84,17 @@ def scan_document(
         else:
             output_root = str(out_path.parent)
     else:
-        # Default: create output in same directory as input
-        output_root = str(input_file.parent)
-    
+        # Default: create docscan_outputs in current working directory
+        output_root = str(Path.cwd() / "docscan_outputs")
+        Path(output_root).mkdir(parents=True, exist_ok=True)
+
     try:
         results = process_image_file(
             image_path=str(input_file),
             output_root=output_root,
             mode=mode,
             tone=tone,
-            output_mode="result",  # Clean output without debug files
+            output_mode="debug" if debug else "result",
         )
         
         # Extract output file paths from results
@@ -123,33 +126,36 @@ def scan_directory(
     output_dir: str | None = None,
     mode: str = "quality",
     tone: str = "bw",
+    debug: bool = False,
 ) -> dict[str, Any]:
     """
     Scan all document photos in a directory.
-    
+
     Args:
         input_dir: Path to directory containing images
-        output_dir: Path for output images (optional, defaults to input_dir/_scanned)
+        output_dir: Path for output images (optional, defaults to docscan_outputs/)
         mode: Processing mode - "fast", "quality", or "auto"
         tone: Output tone - "bw" (black & white), "gray", or "both"
-    
+        debug: If True, output debug files (mask, bbox overlay) for inspection
+
     Returns:
         Dictionary with success status and processing summary
     """
     # 延迟加载模型
     _ensure_models_loaded()
-    
+
     input_path = Path(input_dir)
     if not input_path.exists():
         return {
             "success": False,
             "error": f"Input directory not found: {input_dir}",
         }
-    
+
     if output_dir:
         out_path = Path(output_dir)
     else:
-        out_path = input_path / "_scanned"
+        # Default: create docscan_outputs in current working directory
+        out_path = Path.cwd() / "docscan_outputs"
     out_path.mkdir(parents=True, exist_ok=True)
     
     # Find all images
@@ -170,6 +176,7 @@ def scan_directory(
                 output_path=str(out_path),
                 mode=mode,
                 tone=tone,
+                debug=debug,
             )
             results_summary.append({
                 "file": Path(img_path).name,
