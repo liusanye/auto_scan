@@ -21,26 +21,19 @@
 uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
 ```
 
-等待下载完成后，再配置 Claude Desktop。
+等待下载完成后，再添加到 Claude Code。
 
 ### 快速安装
 
 1. 安装 [uv](https://github.com/astral-sh/uv)（Python 包管理器）
 2. **执行预热命令**（下载 400MB 模型，见上方 ⚠️）
-3. 在 Claude Desktop 配置中添加：
+3. 在终端添加到 Claude Code：
 
-```json
-{
-  "mcpServers": {
-    "docscan": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
-    }
-  }
-}
+```bash
+claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
 ```
 
-3. 重启 Claude Desktop，然后可以直接对话：
+4. 重启 Claude Code，然后可以直接对话：
    - *"帮我扫描这张文档照片"*
    - *"把 ~/Documents 里的所有文档处理成扫描件"*
 

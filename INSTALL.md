@@ -4,14 +4,14 @@
 
 **核心依赖 `rembg` 需要下载 AI 模型文件（约 400MB），首次使用时会自动下载，耗时 2-5 分钟。**
 
-**强烈建议先执行预热命令，提前下载好模型，避免在 Claude 里卡住：**
+**强烈建议先执行预热命令，提前下载好模型，避免在 Claude Code 里卡住：**
 
 ```bash
 # 预热命令 - 提前下载 400MB 模型（必须执行）
 uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
 ```
 
-如果不预热，直接在 Claude 里使用时会卡在「Claude runs a tool...」状态 2-5 分钟，体验很差。
+如果不预热，直接在 Claude Code 里使用时会卡在「正在运行工具...」状态 2-5 分钟，体验很差。
 
 ---
 
@@ -35,22 +35,32 @@ uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
 
 等待下载完成（约 400MB）。
 
-### 3. 配置 Claude Desktop
+### 3. 添加到 Claude Code
 
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+在终端执行以下命令，将 MCP 服务器添加到 Claude Code：
 
-```json
-{
-  "mcpServers": {
-    "docscan": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
-    }
-  }
-}
+```bash
+# 添加到当前项目（默认 local scope，仅本项目可用）
+claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+
+# 或添加到用户级别（所有项目可用）
+claude mcp add --transport stdio --scope user docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+
+# 或添加到项目级别（生成 .mcp.json，可提交到仓库团队共享）
+claude mcp add --transport stdio --scope project docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
 ```
 
-重启 Claude Desktop 即可使用。
+重启 Claude Code 后即可使用。
+
+### 4. 验证安装
+
+```bash
+# 查看已添加的 MCP 服务器
+claude mcp list
+
+# 或在 Claude Code 中运行
+/mcp
+```
 
 ---
 
@@ -64,7 +74,7 @@ uvx 默认会缓存，要获取最新代码：
 # 清理缓存
 uv cache clean
 
-# 然后重启 Claude Desktop
+# 然后重启 Claude Code
 ```
 
 ---
@@ -78,6 +88,9 @@ pipx install git+https://github.com/liusanye/auto_scan
 
 # 预热（同样需要）
 auto-scan-mcp --warmup
+
+# 添加到 Claude Code
+claude mcp add --transport stdio docscan -- auto-scan-mcp
 ```
 
 升级：
@@ -95,5 +108,8 @@ pipx upgrade auto-scan
 git clone https://github.com/liusanye/auto_scan.git
 cd auto_scan
 pip install -e .
+
+# 开发模式运行 MCP
+python -m docscan.mcp_server
 ```
 
