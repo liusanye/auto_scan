@@ -11,7 +11,7 @@
 
 ## 作为 MCP Skill 使用（推荐）
 
-最简单的使用方式，无需手动配置 Python 环境。
+最简单的使用方式，无需手动配置 Python 环境。支持 Claude Code、Codex CLI、Gemini CLI、OpenCode 等 MCP 客户端。
 
 ### ⚠️ 重要：首次使用需下载 400MB 模型
 
@@ -21,13 +21,11 @@
 uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
 ```
 
-等待下载完成后，再添加到 Claude Code。
-
-### 快速安装
+### 快速安装（Claude Code 示例）
 
 1. 安装 [uv](https://github.com/astral-sh/uv)（Python 包管理器）
 2. **执行预热命令**（下载 400MB 模型，见上方 ⚠️）
-3. 在终端添加到 Claude Code：
+3. 添加到 Claude Code：
 
 ```bash
 claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
@@ -37,7 +35,7 @@ claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/li
    - *"帮我扫描这张文档照片"*
    - *"把 ~/Documents 里的所有文档处理成扫描件"*
 
-详细安装说明见 [INSTALL.md](./INSTALL.md)
+**其他客户端配置**（Codex CLI、Gemini CLI、OpenCode）详见 [INSTALL.md](./INSTALL.md)
 
 ---
 
