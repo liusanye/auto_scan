@@ -1,11 +1,25 @@
-source_images/
-outputs*/
+# 虚拟环境
 venv/
 .venv/
-.DS_Store
+.venv*/
+
+# Python缓存
 __pycache__/
 *.pyc
-.venv
-.venv*/
 *.py[cod]
+
+# 编辑器配置
 .vscode/
+.kilocode/
+
+# 系统文件
+.DS_Store
+
+# 测试数据（不提交到仓库）
+source_images/
+source_temp_9/
+batch_test/
+outputs*/
+
+# 其他
+requirements.txt
