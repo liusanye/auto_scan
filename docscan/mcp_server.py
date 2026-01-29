@@ -106,10 +106,11 @@ def scan_document(
         # Extract output file paths from results
         output_files = []
         for result in results:
-            if "outputs" in result:
-                for output in result["outputs"]:
-                    if "path" in output:
-                        output_files.append(output["path"])
+            # PageResult 使用 enhanced_gray_path 和 enhanced_bw_path 字段
+            if result.get("enhanced_gray_path"):
+                output_files.append(result["enhanced_gray_path"])
+            if result.get("enhanced_bw_path"):
+                output_files.append(result["enhanced_bw_path"])
         
         return {
             "success": True,
