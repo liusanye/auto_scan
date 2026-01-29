@@ -86,12 +86,14 @@ def enhance_scan_style(page_image: np.ndarray, enhance_cfg: Dict[str, float] | N
     norm = _division_normalization(gray, blur_ksize=blur_ksize)
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
     norm = clahe.apply(norm)
-    norm_for_bw = norm
+
+    # 逻辑修复开始：清晰的线性流
+    norm_for_bw = norm.copy()
     if bw_pre_smooth_ksize and bw_pre_smooth_ksize > 1:
         if bw_pre_smooth_ksize % 2 == 0:
             bw_pre_smooth_ksize += 1
-        norm_for_bw = cv2.medianBlur(norm, bw_pre_smooth_ksize)
-    norm_for_bw = norm
+        norm_for_bw = cv2.medianBlur(norm_for_bw, bw_pre_smooth_ksize)
+    
     if denoise_enable and bilateral_d and bilateral_sigma_color and bilateral_sigma_space:
         try:
             norm_for_bw = cv2.bilateralFilter(
@@ -99,10 +101,8 @@ def enhance_scan_style(page_image: np.ndarray, enhance_cfg: Dict[str, float] | N
             )
         except Exception:
             pass
-    if bw_pre_smooth_ksize and bw_pre_smooth_ksize > 1:
-        if bw_pre_smooth_ksize % 2 == 0:
-            bw_pre_smooth_ksize += 1
-        norm_for_bw = cv2.medianBlur(norm, bw_pre_smooth_ksize)
+    # 逻辑修复结束：移除了重复赋值和重复平滑
+
     if bw_method == "wolf":
         thresh = _threshold_wolf(norm_for_bw, window_size=sauvola_window, k=wolf_k)
     else:

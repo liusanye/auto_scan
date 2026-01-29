@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auto-scan"
+version = "0.1.1"
+description = "Turn your document photos into scanned images automatically."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["document", "scan", "image-processing", "ocr", "mcp"]
+authors = [
+    {name = "liusanye", email = "jakeyfly@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+]
+dependencies = [
+    "rembg>=2.0.52,<2.1",
+    "opencv-python-headless>=4.9.0,<4.10",
+    "scikit-image>=0.22.0,<0.23",
+    "tqdm>=4.66.0,<4.67",
+    "pyyaml>=6.0.1,<7.0",
+    "Pillow>=10.2.0,<12.0",
+    "numpy>=1.26.0,<2.0",
+    "fastmcp>=0.3.0",
+    "onnxruntime>=1.16.0,<1.20",
+]
+
+[project.optional-dependencies]
+silicon = ["onnxruntime-silicon>=1.16.0,<1.19"]
+dev = ["pytest", "black", "ruff"]
+
+[project.scripts]
+auto-scan = "docscan.__main__:main"
+auto-scan-mcp = "docscan.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/liusanye/auto_scan"
+Repository = "https://github.com/liusanye/auto_scan"
+
+[tool.hatch.build.targets.wheel]
+packages = ["docscan"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/docscan",
+    "/README.md",
+    "/LICENSE",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W"]
+ignore = ["E501"]

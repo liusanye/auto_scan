@@ -1,5 +1,37 @@
 # 文档拍照自动整理系统
 
+## 作为 MCP Skill 使用（推荐）
+
+最简单的使用方式，无需手动配置 Python 环境。
+
+### 快速安装
+
+1. 安装 [uv](https://github.com/astral-sh/uv)（Python 包管理器）
+2. 在 Claude Desktop 配置中添加：
+
+```json
+{
+  "mcpServers": {
+    "docscan": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
+    }
+  }
+}
+```
+
+3. 重启 Claude Desktop，然后可以直接对话：
+   - *"帮我扫描这张文档照片"*
+   - *"把 ~/Documents 里的所有文档处理成扫描件"*
+
+**首次使用**：会自动下载依赖（约 400MB），请耐心等待。
+
+详见 [INSTALL.md](./INSTALL.md)
+
+---
+
+## 传统使用方式
+
 > 目标：将手机拍摄的文档照片转换为“扫描风格”二值图片（默认），也可输出灰度或双输出，使用预训练模型，在 macOS / Apple Silicon CPU 环境可运行。
 > 默认输出模式为 `review`（mask + bbox + bw），可切换为 `result` 或 `debug`。
 > 当前主流程不包含 OCR；OCR 模块已存在但未接入 pipeline。
