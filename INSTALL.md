@@ -1,21 +1,16 @@
 # 安装指南
 
-## 重要：首次使用需要下载 400MB 模型（必须）
+## ⚠️ 重要：首次使用需要下载 400MB 模型
 
-**核心依赖 `rembg` 需要下载 AI 模型文件（约 400MB），首次使用时会自动下载，耗时 2-5 分钟。**
+**本工具依赖 `rembg` AI 模型（约 400MB），首次启动时必须下载。**
 
-**强烈建议先执行预热命令，提前下载好模型：**
-
-```bash
-# 预热命令 - 提前下载 400MB 模型（必须执行）
-uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
-```
-
-如果不预热，直接在 AI 客户端里使用时会卡在「正在运行工具...」状态 2-5 分钟，体验很差。
+如果不提前下载，第一次使用会卡住 2-5 分钟，体验很差。
 
 ---
 
-## 1. 安装 uv（Python 包管理器）
+## 推荐安装流程（Claude Code 示例）
+
+### 第 1 步：安装 uv（如果还没有）
 
 ```bash
 # macOS/Linux
@@ -25,61 +20,77 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
----
+### 第 2 步：预热（提前下载 400MB 模型）
 
-## 2. 执行预热（下载模型）
+**这一步会启动 MCP 服务器并下载模型，下载完成后自动退出。**
 
 ```bash
 uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
 ```
 
-等待下载完成（约 400MB）。
+等待显示 "Warmup complete" 或类似完成提示（约 2-5 分钟，视网速）。
+
+### 第 3 步：配置（告诉 Claude 如何启动 MCP）
+
+**这一步只是写入配置文件，不会下载任何东西。**
+
+```bash
+claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+```
+
+### 第 4 步：重启 Claude Code
+
+完全退出 Claude Code，然后重新打开。
+
+### 第 5 步：使用
+
+现在可以直接对话：
+- *"帮我扫描 ~/Documents/photo.jpg"*
+- *"把 ~/Documents 里的所有文档处理成扫描件"*
 
 ---
 
-## 3. 添加 MCP 到你的 AI 客户端
+## 如果不预热会发生什么？
 
-支持 **Claude Code**、**Codex CLI**、**Gemini CLI**、**OpenCode** 等 MCP 客户端。
+**你会遇到：**
 
-### Claude Code
-
-```bash
-# 添加到当前项目（默认 local scope，仅本项目可用）
-claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
-
-# 或添加到用户级别（所有项目可用）
-claude mcp add --transport stdio --scope user docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
-
-# 或添加到项目级别（生成 .mcp.json，可提交到仓库团队共享）
-claude mcp add --transport stdio --scope project docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+```
+你: 帮我扫描这张照片
+Claude: [Claude runs a tool...]  ← 卡在这里 2-5 分钟，没有任何提示
 ```
 
-验证：
-```bash
-claude mcp list
-# 或在 Claude Code 中运行 /mcp
-```
+**原因**：Claude 第一次启动 MCP 服务器时，服务器在后台下载 400MB 模型，Claude 界面只会显示 "running tool"，用户不知道发生了什么。
+
+**所以强烈建议先执行第 2 步预热。**
+
+---
+
+## 其他 AI 客户端配置
 
 ### Codex CLI
 
-编辑 `~/.codex/config.toml`：
+**预热（和第 1 步一样，只需做一次）：**
+```bash
+uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
+```
 
+**配置：**
+编辑 `~/.codex/config.toml`：
 ```toml
 [mcp_servers.docscan]
 command = "uvx"
 args = ["--from", "git+https://github.com/liusanye/auto_scan", "auto-scan-mcp"]
 ```
 
-或使用命令：
-```bash
-codex mcp add docscan
-# 然后按提示输入命令: uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
-```
-
 ### Gemini CLI
 
-编辑 `~/.gemini/settings.json`：
+**预热：**
+```bash
+uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
+```
 
+**配置：**
+编辑 `~/.gemini/settings.json`：
 ```json
 {
   "mcpServers": {
@@ -91,16 +102,15 @@ codex mcp add docscan
 }
 ```
 
-或使用 FastMCP 快捷安装：
-```bash
-# 如果你已经安装了 fastmcp
-fastmcp install gemini-cli
-```
-
 ### OpenCode
 
-编辑 `opencode.jsonc`（项目根目录）：
+**预热：**
+```bash
+uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
+```
 
+**配置：**
+编辑项目根目录的 `opencode.jsonc`：
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
@@ -116,20 +126,10 @@ fastmcp install gemini-cli
 
 ---
 
-## 4. 使用
-
-配置完成后，重启你的 AI 客户端，然后可以直接对话：
-
-- *"帮我扫描 ~/Documents/photo.jpg"*
-- *"把 ~/Documents 里的所有文档处理成扫描件"*
-- *"扫描这张照片并输出为 PDF"*
-
----
-
-## 升级方式
+## 升级
 
 ```bash
-# 清理 uv 缓存获取最新版
+# 清理 uv 缓存，下次使用会拉取最新代码
 uv cache clean
 ```
 
@@ -137,17 +137,18 @@ uv cache clean
 
 ---
 
-## 备选：pipx 安装
+## 备选：pipx 永久安装
 
-如果你想永久安装到本地（不依赖 uvx）：
+如果你不想每次用 uvx，可以永久安装：
 
 ```bash
+# 安装
 pipx install git+https://github.com/liusanye/auto_scan
 
-# 预热
+# 预热（下载模型）
 auto-scan-mcp --warmup
 
-# 添加到 Claude Code（其他客户端类似）
+# 添加到 Claude Code
 claude mcp add --transport stdio docscan -- auto-scan-mcp
 ```
 
@@ -160,14 +161,14 @@ pipx upgrade auto-scan
 
 ## 开发安装
 
-如果你想修改代码：
-
 ```bash
 git clone https://github.com/liusanye/auto_scan.git
 cd auto_scan
 pip install -e .
 
-# 开发模式运行 MCP
+# 预热
+python -m docscan.mcp_server --warmup
+
+# 开发模式运行
 python -m docscan.mcp_server
 ```
-

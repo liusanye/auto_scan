@@ -15,27 +15,25 @@
 
 ### ⚠️ 重要：首次使用需下载 400MB 模型
 
-**核心依赖需要下载 AI 模型文件（约 400MB）。强烈建议先执行预热命令，否则第一次使用会卡住 2-5 分钟：**
+本工具依赖 AI 模型（约 400MB），**必须先预热下载**，否则第一次使用会卡住 2-5 分钟。
+
+### 快速安装（5 步）
 
 ```bash
+# 1. 安装 uv（如果还没有）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. 预热（下载 400MB 模型，约 2-5 分钟）
 uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp --warmup
-```
 
-### 快速安装（Claude Code 示例）
-
-1. 安装 [uv](https://github.com/astral-sh/uv)（Python 包管理器）
-2. **执行预热命令**（下载 400MB 模型，见上方 ⚠️）
-3. 添加到 Claude Code：
-
-```bash
+# 3. 配置（只是写配置，不下载）
 claude mcp add --transport stdio docscan -- uvx --from git+https://github.com/liusanye/auto_scan auto-scan-mcp
+
+# 4. 重启 Claude Code
+# 5. 使用："帮我扫描 ~/Documents/photo.jpg"
 ```
 
-4. 重启 Claude Code，然后可以直接对话：
-   - *"帮我扫描这张文档照片"*
-   - *"把 ~/Documents 里的所有文档处理成扫描件"*
-
-**其他客户端配置**（Codex CLI、Gemini CLI、OpenCode）详见 [INSTALL.md](./INSTALL.md)
+**详细说明和其他客户端配置**（Codex CLI、Gemini CLI、OpenCode）见 [INSTALL.md](./INSTALL.md)
 
 ---
 
